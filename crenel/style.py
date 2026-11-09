@@ -20,6 +20,12 @@ from . import UI_POINT_SIZE
 WINDOW_LIGHTEN = 140
 MIN_SEPARATION = 6
 
+# How much lighter than the folder list's own rows its alternate rows are on
+# a dark theme (a QColor.lighter() percentage), so the striping shows, and the
+# lightness below which a list's surface counts as dark.
+ALTERNATE_LIGHTEN = 120
+DARK_LIGHTNESS = 128
+
 # PRIMARY is a muted green for the main action (Apply, Save). SECONDARY is
 # the neutral gray of anything beside one. DANGER is the brick red of Hide All,
 # which takes access away from everything at once.
@@ -184,22 +190,25 @@ def status_style(busy: bool) -> str:
 
 
 def tune_palette(app: QApplication) -> None:
-    """Lighten the window surface when the theme gives it the list's own color.
+    """Separate the theme's surfaces where it leaves them too close together.
 
     Yaru-dark through Fusion hands Qt the same color for `Window` and `Base`,
-    so the list has no edge. The change is applied only when it actually
-    increases the separation, so a light theme is left alone.
+    so the list has no edge, and an `AlternateBase` a shade darker than
+    `Base`, so the row striping hardly shows. On a dark list the alternate
+    rows are made a step lighter than `Base` instead. The window change is
+    applied only when it actually increases the separation, and neither
+    touches a light theme.
     """
     palette = app.palette()
     window = palette.color(QPalette.ColorRole.Window)
     base = palette.color(QPalette.ColorRole.Base)
     before = abs(window.lightness() - base.lightness())
-    if before >= MIN_SEPARATION:
-        return
-    lightened = window.lighter(WINDOW_LIGHTEN)
-    if abs(lightened.lightness() - base.lightness()) <= before:
-        return
-    palette.setColor(QPalette.ColorRole.Window, lightened)
+    if before < MIN_SEPARATION:
+        lightened = window.lighter(WINDOW_LIGHTEN)
+        if abs(lightened.lightness() - base.lightness()) > before:
+            palette.setColor(QPalette.ColorRole.Window, lightened)
+    if base.lightness() < DARK_LIGHTNESS:
+        palette.setColor(QPalette.ColorRole.AlternateBase, base.lighter(ALTERNATE_LIGHTEN))
     app.setPalette(palette)
 
 
