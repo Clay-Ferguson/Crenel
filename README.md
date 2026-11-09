@@ -2,7 +2,13 @@
 
 ![Python](https://img.shields.io/badge/python-3.11+-blue.svg) ![Platform](https://img.shields.io/badge/platform-linux-lightgrey.svg) ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
-A desktop utility for running AI agents in a QEMU/KVM virtual machine. It controls which of your project folders the VM can see, one project at a time. Each project is **Hidden**, **Read** or **Write**: pick with the radio buttons, press **Apply**, and enter your password once.
+A desktop utility for rapidly and easily configuring folder shares in a QEMU/KVM virtual machine. It controls which of your project folders the VM can see, one project at a time. Each project is **Hidden**, **Read** or **Write**: pick with the radio buttons, press **Apply**, and enter your password once. 
+
+![Screenshot](crenel-screenshot.png)
+
+With Crenel, well you can specify one single shared folder with all your projects in it, that you share to the Guest/VM, so that you only have to set up the VM to point to that one folder. Then depending on which project you want your VM to be able to see at any given time, you simply choose the proper radio buttons in the Crenel app. This allows you to only give your VM access to the exact folders that it needs to have at any given time, thereby reducing the risk of any rogue agents altering any files without your knowledge. 
+
+This application was created primarily for the use case of AI Agents running in the VM, and it allows you to be sure that the agent is only able to edit files in the project that you're currently working on.
 
 **Highlights**
 
