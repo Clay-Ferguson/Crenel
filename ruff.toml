@@ -1,0 +1,12 @@
+# Lint and import-order settings; run by ./lint.sh.
+
+line-length = 100
+target-version = "py311"
+
+[lint]
+# pycodestyle errors and warnings, pyflakes, bugbear, and import sorting.
+select = ["E", "W", "F", "B", "I"]
+
+[lint.isort]
+known-first-party = ["crenel", "helpers"]
+known-local-folder = ["conftest"]

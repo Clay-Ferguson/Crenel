@@ -1,0 +1,20 @@
+[project]
+name = "crenel"
+version = "0.1.0"
+description = "Choose which project folders a QEMU/KVM VM can see, each Hidden, Read or Write"
+requires-python = ">=3.11"
+dependencies = [
+    "PyQt6>=6.6",
+    "PyYAML>=6.0",
+    "windowchrome",
+]
+
+# `windowchrome` is not on PyPI: it is developed beside this project and
+# consumed from the sibling directory (`../windowchrome`), as in DupFinder.
+[tool.uv.sources]
+windowchrome = { path = "../windowchrome", editable = true }
+
+# Not an installable package: uv only builds the virtualenv, and start.sh runs
+# the code straight out of the tree.
+[tool.uv]
+package = false

@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<!--
+  Lets `pkexec /usr/lib/crenel/crenel-helper` run with a prompt that names
+  Crenel, and remembers the password for a few minutes (auth_admin_keep) so a
+  second Apply soon after does not ask again. Installed by packaging/build-deb.sh
+  into /usr/share/polkit-1/actions/. The helper validates everything it is
+  sent; see crenel/helper.py.
+-->
+<policyconfig>
+  <vendor>Crenel</vendor>
+  <action id="com.github.clayferguson.crenel.apply">
+    <description>Change which project folders the VM can see</description>
+    <message>Crenel needs your password to change which project folders the VM can see.</message>
+    <icon_name>crenel</icon_name>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/lib/crenel/crenel-helper</annotate>
+  </action>
+</policyconfig>
