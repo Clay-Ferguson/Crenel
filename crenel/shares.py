@@ -150,6 +150,36 @@ def list_projects(root: str) -> list[str]:
     return sorted(names, key=str.casefold)
 
 
+def stray_entries(share: str, entries: Sequence[MountEntry]) -> list[str]:
+    """What is in the share folder that Crenel did not put there, sorted.
+
+    The VM sees everything in the share folder, and can write to whatever is
+    not a read-only share. So the only things expected in it are Crenel's
+    mounts and empty folders (mount points no longer in use, as after a
+    reboot, which show the VM a name and nothing else). Anything else (a
+    file, a symlink, a folder with something in it) is listed. A missing or
+    unreadable share folder lists nothing.
+    """
+    try:
+        names = os.listdir(share)
+    except OSError:
+        return []
+    stray = []
+    for name in names:
+        path = os.path.join(share, name)
+        if mounts_under(entries, path):
+            continue
+        mode = _lstat_mode(path)
+        if mode is not None and stat.S_ISDIR(mode):
+            try:
+                if not os.listdir(path):
+                    continue
+            except OSError:
+                pass
+        stray.append(name)
+    return sorted(stray, key=str.casefold)
+
+
 def _lstat_mode(path: str) -> int | None:
     try:
         return os.lstat(path).st_mode

@@ -228,3 +228,23 @@ def test_close_waits_for_apply(window, runner):
     assert window.close() is False
     runner.finish()
     assert window.close() is True
+
+
+def test_stray_items_block_sharing_but_not_hiding(window, runner, dialogs, monkeypatch, projects):
+    _root, share = projects
+    with open(os.path.join(share, "notes.txt"), "w") as handle:
+        handle.write("x")
+    states = {"ABC": FolderState("ABC", WRITE), "DEF": FolderState("DEF", HIDDEN)}
+    monkeypatch.setattr(window_module, "read_states", lambda root, share: states)
+    window.refresh(ask=False)
+    assert "⚠ 1 stray item in the share folder" in window.status_text()
+    window.choose("DEF", READ)
+    window.apply()
+    assert runner.requests == []
+    title, text = dialogs[-1]
+    assert title == "Crenel — share folder not empty" and "notes.txt" in text
+    window.choose("DEF", HIDDEN)
+    window.choose("ABC", HIDDEN)
+    window.apply()
+    assert [c["name"] for c in runner.requests[-1]["changes"]] == ["ABC"]
+

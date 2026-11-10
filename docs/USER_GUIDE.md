@@ -33,6 +33,8 @@ A bind mount makes the same folder appear in a second place. It is not a copy an
 
 Hiding a project unmounts it and removes its empty folder from the share folder.
 
+The VM sees **everything** in the share folder, not only the projects Crenel shares, and can change whatever is not shared Read. So the share folder must hold nothing but Crenel's shares and empty folders (an empty folder is a share no longer in use, as after a reboot, and shows the VM only its name). Crenel refuses a share folder with anything else in it when you save the settings. If something appears in it later, the status bar shows a **⚠ stray item** count, and Apply refuses to share any project until it is moved out. Hiding projects still works.
+
 Bind mounts do not survive a reboot, so **every project is Hidden after the host restarts** until you share it again. That is the safe default.
 
 Crenel keeps no record of its own: what it shows is read from the kernel's mount table every time.
@@ -136,7 +138,7 @@ A row marked **⚠** in red has something in its place in the share folder that 
 Options ▸ Settings:
 
 - **Projects folder**: the folder whose subfolders are listed.
-- **VM share folder**: the folder the VM's virtiofs share points at. Crenel creates it if it is missing. It must not be inside the projects folder, or contain it.
+- **VM share folder**: the folder the VM's virtiofs share points at. Crenel creates it if it is missing. It must not be inside the projects folder, or contain it, and must hold nothing but empty folders and Crenel's own shares (see [How it works](#how-it-works)).
 - **Git protection**: see [Git protection](#git-protection).
 
 The settings are kept in a YAML file. See [CONFIG.md](CONFIG.md).
@@ -144,5 +146,6 @@ The settings are kept in a YAML file. See [CONFIG.md](CONFIG.md).
 ## What Crenel does not protect
 
 - **Projects you share Write.** The agent can change anything in them apart from `.git`. Be careful with anything else in a writable project that runs on the host: build scripts, `package.json` scripts, a `Makefile`, `.envrc` (direnv), `.vscode/tasks.json`. Review changes before running them on the host, or run them inside the VM.
+- **Root in the VM.** libvirt normally runs virtiofsd as root, and passes file ownership straight through, so root inside the VM can create root-owned *setuid* programs in a Write project, or in the share folder itself (which the VM can always write to). Run on the host, such a program runs as root, not as you. Mounting the filesystem that holds your projects with `nosuid`, or running virtiofsd unprivileged or with an ID map (see libvirt's virtiofs documentation), closes this.
 - **Open files after a detach.** See [Folders in use](#folders-in-use).
 - **Whatever else the VM shares.** Crenel manages only the share folder. Any other `<filesystem>` in the VM's configuration still shares what it shares.

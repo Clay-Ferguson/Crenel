@@ -45,7 +45,7 @@ from .config import Settings, ensure_share_dir, folder_problems, load_settings
 from .help import show_user_guide
 from .privilege import HelperRunner
 from .protocol import HelperReply, build_request
-from .settings import show_settings
+from .settings import show_settings, stray_text
 from .shares import (
     CONFLICT,
     HIDDEN,
@@ -61,6 +61,7 @@ from .shares import (
     render_step,
     stage_setup_commands,
     stage_teardown_commands,
+    stray_entries,
 )
 from .statusbar import BusyStatusBar
 from .style import (
@@ -156,6 +157,8 @@ class MainWindow(QMainWindow):
         self._groups: dict[str, QButtonGroup] = {}
         self._rows: dict[str, int] = {}
         self._applying: dict[str, str] = {}
+        # What is in the share folder that Crenel did not put there.
+        self._stray: list[str] = []
         # The headline of the last Apply's summary, shown in the status bar
         # until the next Apply or a Refresh you ask for.
         self._last_result = ""
@@ -297,13 +300,16 @@ class MainWindow(QMainWindow):
             if share_error:
                 problems = [share_error]
         states: dict[str, FolderState] = {}
+        stray: list[str] = []
         if not problems:
             try:
                 states = read_states(settings.root_path, settings.share_path)
+                stray = stray_entries(settings.share_path, read_mountinfo())
             except OSError as exc:
                 problems = [f"Could not read the mount table: {exc.strerror or exc}"]
         self._problem = problems[0] if problems else ""
         self._states = states
+        self._stray = stray
         self._desired = {n: (s.mode if s.mode != CONFLICT else None) for n, s in states.items()}
         for name, mode in (keep or {}).items():
             if name in self._desired:
@@ -449,6 +455,8 @@ class MainWindow(QMainWindow):
         )
         if conflicts:
             text += f" · {conflicts} in conflict"
+        if self._stray:
+            text += f" · ⚠ {plural(len(self._stray), 'stray item')} in the share folder"
         pending = len(self.pending())
         if pending:
             text += f" · {plural(pending, 'change')} not applied yet"
@@ -524,6 +532,23 @@ class MainWindow(QMainWindow):
             self._start(changes, force=False)
 
     def _start(self, changes: list[Change], force: bool) -> None:
+        # Nothing is shared into a share folder holding things Crenel did not
+        # put there, since the VM sees those too. Hiding always works.
+        if any(c.mode != HIDDEN for c in changes):
+            share = self._settings.share_path
+            try:
+                stray = stray_entries(share, read_mountinfo())
+            except OSError:
+                stray = []  # the helper reads the table itself and fails on its own
+            if stray:
+                self._stray = stray
+                self._update()
+                QMessageBox.warning(
+                    self,
+                    f"{APP_NAME} — share folder not empty",
+                    stray_text(share, stray) + "\n\nHiding projects still works.",
+                )
+                return
         request = build_request(self._settings, changes, force)
         # Recorded before starting: a runner may reply before start() returns.
         self._applying = {c.name: c.mode for c in changes}

@@ -36,6 +36,7 @@ from .config import (
     real_path,
     save_settings,
 )
+from .shares import read_mountinfo, stray_entries
 from .style import (
     PRIMARY_BUTTON_BG,
     SECONDARY_BUTTON_BG,
@@ -51,6 +52,23 @@ MIN_WIDTH = 640
 ROOT_LABEL = "Projects folder (every folder directly inside it is listed):"
 SHARE_LABEL = "VM share folder (point the VM's virtiofs share here):"
 PROTECT_LABEL = "Make .git read-only in projects shared Write"
+
+# How many stray items a message names before it just counts the rest.
+STRAY_LISTED = 10
+
+
+def stray_text(share: str, names: list[str]) -> str:
+    """Why a share folder holding `names` (see `shares.stray_entries`) is refused."""
+    shown = [n.encode("utf-8", "surrogateescape").decode("utf-8", "replace") for n in names]
+    listed = "\n".join(shown[:STRAY_LISTED])
+    if len(names) > STRAY_LISTED:
+        listed += f"\n…and {len(names) - STRAY_LISTED:,} more"
+    return (
+        f"The share folder {share} has things in it that Crenel did not put there, "
+        f"and the VM can see (and change) all of them:\n\n{listed}\n\n"
+        "Move them out of the share folder, or choose an empty one. "
+        "Only empty folders and Crenel's own shares belong in it."
+    )
 
 
 class SettingsDialog(QDialog):
@@ -89,7 +107,8 @@ class SettingsDialog(QDialog):
                 "Shared projects are mounted in here. Point the VM's virtiofs share\n"
                 "at this folder instead of the projects folder (see the User Guide).\n"
                 "Created if it does not exist. It must not be inside the projects\n"
-                "folder, or contain it."
+                "folder, or contain it, and must hold nothing but empty folders and\n"
+                "Crenel's own shares, since the VM sees everything in it."
             ),
         )
 
@@ -170,6 +189,17 @@ class SettingsDialog(QDialog):
         problems = folder_problems(settings)
         if problems:
             QMessageBox.warning(self, f"{APP_NAME} — Settings", "\n\n".join(problems))
+            return
+        try:
+            stray = stray_entries(settings.share_path, read_mountinfo())
+        except OSError:
+            # Without the mount table Crenel's own shares cannot be told from
+            # strays. The window says the table is unreadable, and lists nothing.
+            stray = []
+        if stray:
+            QMessageBox.warning(
+                self, f"{APP_NAME} — Settings", stray_text(settings.share_path, stray)
+            )
             return
         error = ensure_share_dir(settings) or save_settings(settings)
         if error:

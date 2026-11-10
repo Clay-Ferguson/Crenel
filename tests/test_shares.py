@@ -27,6 +27,7 @@ from crenel.shares import (
     parse_mountinfo,
     plan_folder,
     render_step,
+    stray_entries,
     unescape,
 )
 
@@ -201,3 +202,19 @@ def test_render_step_quotes_paths():
     assert render_step(Step(READONLY, "/s/x")) == "mount -o remount,bind,ro /s/x"
     assert render_step(Step(MOVE, "/s/x", "/run/st/x")) == "mount --move /run/st/x /s/x"
     assert render_step(Step(PRIVATE, "/run/st/x")) == "mount --make-private /run/st/x"
+
+
+def test_stray_entries_allows_only_mounts_and_empty_folders(tmp_path):
+    share = tmp_path / "vm-share"
+    (share / "unused").mkdir(parents=True)          # an empty mount point: fine
+    (share / "ABC").mkdir()
+    (share / "ABC" / "file").write_text("x")       # a share: its mount is listed below
+    (share / "full").mkdir()
+    (share / "full" / "file").write_text("x")      # a folder with something in it
+    (share / "notes.txt").write_text("x")
+    (share / ".hidden").write_text("x")
+    os.symlink(share / "unused", share / "link")    # a link, even to an empty folder
+    entries = [entry(str(share / "ABC"))]
+    assert stray_entries(str(share), entries) == [".hidden", "full", "link", "notes.txt"]
+    assert stray_entries(str(tmp_path / "missing"), []) == []
+

@@ -85,7 +85,7 @@ ROOT_COMMENT = """\
 
 SHARE_COMMENT = """\
   # The folder the VM's virtiofs share points at. Crenel mounts each project
-  # you share into it, so it should be empty apart from what Crenel puts there.
+  # you share into it, so it must be empty apart from what Crenel puts there.
   # It must not be inside the projects folder, or contain it.
 """
 

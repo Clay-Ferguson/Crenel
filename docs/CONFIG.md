@@ -14,7 +14,7 @@ protection:
 ## Keys
 
 - `folders.projects_root`: the folder whose subfolders Crenel lists. `~` is expanded, and a symlinked path is resolved to the real folder. Empty on first run, which opens the settings dialog.
-- `folders.share_dir`: the folder the VM's virtiofs share points at (see the [User Guide](USER_GUIDE.md#one-time-vm-setup)). Defaults to `~/vm-share`, and is created if missing. It must not be inside `projects_root`, or contain it.
+- `folders.share_dir`: the folder the VM's virtiofs share points at (see the [User Guide](USER_GUIDE.md#one-time-vm-setup)). Defaults to `~/vm-share`, and is created if missing. It must not be inside `projects_root`, or contain it, and must hold nothing but empty folders and Crenel's own shares.
 - `protection.protect_git`: `true` or `false` (a real YAML boolean, unquoted). Whether projects shared Write get their `.git` made read-only inside the VM. See [Git protection](USER_GUIDE.md#git-protection).
 
 A key holding the wrong type is ignored and its default used instead. A file that cannot be parsed at all gives the defaults, and the settings dialog says so before you save over it.

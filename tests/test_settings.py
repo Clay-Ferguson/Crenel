@@ -57,3 +57,20 @@ def test_there_are_no_command_fields(qtbot, conf):
     dialog = make(qtbot)
     labels = " ".join(label.text() for label in dialog.findChildren(QLabel)).lower()
     assert "command" not in labels
+
+
+def test_a_share_folder_with_strays_is_refused(qtbot, conf, projects, dialogs):
+    _root, share = projects
+    os.makedirs(os.path.join(share, "left-over"))
+    dialog = make(qtbot)
+    dialog.protect_check.setChecked(False)
+    dialog._save()
+    assert dialog.result() == dialog.DialogCode.Accepted  # empty folders are fine
+    with open(os.path.join(share, "notes.txt"), "w") as handle:
+        handle.write("x")
+    dialog = make(qtbot)
+    dialog.protect_check.setChecked(True)
+    dialog._save()
+    assert dialog.result() != dialog.DialogCode.Accepted
+    assert "notes.txt" in dialogs[-1][1] and "left-over" not in dialogs[-1][1]
+    assert load_settings()[0].protect_git is False  # the refused save wrote nothing
