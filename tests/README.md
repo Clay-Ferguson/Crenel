@@ -8,6 +8,7 @@ Run with `./tests/run.sh` (see `AGENTS.md`). Arguments go straight to pytest.
 - `test_helper.py`: the root helper's request validation, descriptor-based opening, and remount flags. Runs without root.
 - `test_helper_namespace.py`: **the helper making real bind mounts**, inside `unshare -rm` (a throwaway user and mount namespace where the test is root). `/` is made rshared like a desktop host, and a nested *slave* namespace plays the VM (virtiofsd's view), so the tests check what the VM can actually write. Covers Read and Write as seen from the VM, git protection staying off the real project, mode switches, Hide, busy and forced unmounts, the scratch spot's cleanup, and symlink refusal. Skipped where unprivileged namespaces are not allowed.
 - `test_protocol.py`, `test_config.py`: the request and reply, and the config file.
+- `test_privilege.py`: the command that runs the helper as root (a fixed `/usr/bin/pkexec`, never one from `$PATH`).
 - `test_window.py`: the window end to end with a `FakeRunner` in place of pkexec.
 - `test_settings.py`: the dialog.
 - `test_help.py`: the Options menu, and every link and anchor in `docs/`.

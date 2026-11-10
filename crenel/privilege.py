@@ -21,7 +21,6 @@ Never a shell: the argv is a fixed list.
 from __future__ import annotations
 
 import os
-import shutil
 from pathlib import Path
 
 from PyQt6.QtCore import QObject, QProcess, pyqtSignal
@@ -33,6 +32,9 @@ INSTALLED_HELPER = INSTALLED_LIB / "crenel-helper"
 PACKAGE_DIR = Path(__file__).resolve().parent
 SOURCE_ROOT = PACKAGE_DIR.parent
 SYSTEM_PYTHON = "/usr/bin/python3"
+# Never looked up on $PATH: a fake pkexec earlier on it (in ~/.local/bin, say)
+# could show a lookalike password prompt and keep the password.
+PKEXEC = "/usr/bin/pkexec"
 
 # What the system python runs in a checkout: put the tree on the path (argv[1])
 # and call the helper. -I keeps PYTHONPATH and ~/.local out of a root process,
@@ -45,12 +47,11 @@ BOOTSTRAP = (
 
 def helper_argv() -> list[str] | None:
     """The command that runs the helper as root, or None without pkexec."""
-    pkexec = shutil.which("pkexec")
-    if pkexec is None:
+    if not os.access(PKEXEC, os.X_OK):
         return None
     if PACKAGE_DIR.is_relative_to(INSTALLED_LIB) and os.path.exists(INSTALLED_HELPER):
-        return [pkexec, str(INSTALLED_HELPER)]
-    return [pkexec, SYSTEM_PYTHON, "-I", "-B", "-c", BOOTSTRAP, str(SOURCE_ROOT)]
+        return [PKEXEC, str(INSTALLED_HELPER)]
+    return [PKEXEC, SYSTEM_PYTHON, "-I", "-B", "-c", BOOTSTRAP, str(SOURCE_ROOT)]
 
 
 class HelperRunner(QObject):
