@@ -83,11 +83,11 @@ Changing an already-shared project, say from Write to Read, takes the share down
 
 ## Git protection
 
-A project shared Write is writable from inside the VM, and that includes its `.git` folder. An agent (or anything that compromised it) could plant a git hook, a script that runs **on the host** the next time you commit there. It could also set `core.hooksPath` in `.git/config` to point git at hooks somewhere else.
+A project shared Write is writable from inside the VM, and that includes its `.git` folder. An agent (or anything that compromised it) could plant a git hook, a script that runs **on the host** the next time you commit there. There are many ways to do that: a file in `.git/hooks`, `core.hooksPath` in `.git/config`, a `.git/commondir` file, a submodule's hooks, or simply renaming `.git` and putting a new one of its own in its place.
 
-With git protection on (the default), Crenel makes `.git/hooks` and `.git/config` read-only inside the VM for projects shared Write. Commits, branches, pushes and pulls still work there. What stops working in the VM is anything that writes `.git/config`: `git config`, `git remote add`, and creating a branch with upstream tracking. Do those on the host.
+With git protection on (the default), Crenel makes the whole `.git` read-only inside the VM for projects shared Write, and mounts it in its own right, so it cannot be renamed, removed or replaced either. That closes all of the above at once. Git in the VM can still read (`git status`, `git log`, `git diff`), but anything that writes to `.git` fails there: commits, branches, fetches, pulls, `git config`. Do those on the host.
 
-Protection applies only to a real `.git` folder. A worktree or a submodule, whose `.git` is a file, has nothing to protect here.
+A `.git` that is a file (a worktree or a submodule) is protected the same way, so its `gitdir:` line cannot be pointed somewhere else. A project with no `.git` has nothing to protect, and neither does one whose `.git` is a symlink, which Crenel never follows.
 
 The protection covers only the VM's view. Your own `.git` on the host stays fully writable.
 
@@ -106,7 +106,7 @@ This applies to every change to a shared project, not only to hiding it, because
 Linux keeps a separate copy of the share folder for the VM, and the kernel copies each new mount into it at the moment the mount arrives. Two things follow from that:
 
 - A share made read-only *after* it arrives would stay writable in the VM's copy.
-- A plain bind mount stays *linked* to the project folder it came from. Anything later mounted inside the share, such as the git protection, would be copied back onto your real project, making its `.git/hooks` and `.git/config` read-only on the host.
+- A plain bind mount stays *linked* to the project folder it came from. Anything later mounted inside the share, such as the git protection, would be copied back onto your real project, making its `.git` read-only on the host.
 
 So Crenel builds every share off to the side first, in a private, empty scratch spot (`/run/crenel-stage`, which only root can enter and which exists only during an Apply):
 
@@ -143,6 +143,6 @@ The settings are kept in a YAML file. See [CONFIG.md](CONFIG.md).
 
 ## What Crenel does not protect
 
-- **Projects you share Write.** The agent can change anything in them, apart from the git hooks and config. Be careful with anything else in a writable project that runs on the host: build scripts, `package.json` scripts, a `Makefile`, `.envrc` (direnv), `.vscode/tasks.json`. Review changes before running them on the host, or run them inside the VM.
+- **Projects you share Write.** The agent can change anything in them apart from `.git`. Be careful with anything else in a writable project that runs on the host: build scripts, `package.json` scripts, a `Makefile`, `.envrc` (direnv), `.vscode/tasks.json`. Review changes before running them on the host, or run them inside the VM.
 - **Open files after a detach.** See [Folders in use](#folders-in-use).
 - **Whatever else the VM shares.** Crenel manages only the share folder. Any other `<filesystem>` in the VM's configuration still shares what it shares.

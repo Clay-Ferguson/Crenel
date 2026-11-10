@@ -23,7 +23,7 @@ two consequences:
   that moment, with the flags it has *then*. Making it read-only afterwards
   changes only the host's copy, and the VM's copy stays writable.
 - A plain bind of a project joins the root filesystem's link group, so
-  anything later mounted inside the share (the git protections) is mirrored
+  anything later mounted inside the share (the git protection) is mirrored
   back onto the real project on the host.
 
 So a share is assembled complete (made private, read-only, git-protected) in
@@ -56,11 +56,13 @@ CONFLICT = "conflict"
 
 MOUNTINFO = "/proc/self/mountinfo"
 
-# What "protect git" makes read-only inside a project shared Write: the hooks
-# git runs, and the config that could point git at other hooks
-# (`core.hooksPath`). Relative to the project.
+# What "protect git" makes read-only inside a project shared Write: the whole
+# `.git`, so nothing in the VM can plant a hook, point git at other hooks or
+# another git directory, or swap `.git` for one of its own (a mount point
+# cannot be renamed or removed). Git in the VM can then read but not write.
+# Relative to the project.
 GIT_DIR = ".git"
-GIT_PROTECTED = (".git/hooks", ".git/config")
+GIT_PROTECTED = (GIT_DIR,)
 
 # The helper's scratch spot (see the module docstring): a private tmpfs that
 # exists only while the helper runs, readable by root alone.
@@ -158,24 +160,15 @@ def _lstat_mode(path: str) -> int | None:
 def git_targets(source: str) -> tuple[str, ...]:
     """The entries of `GIT_PROTECTED` that a project really has.
 
-    Only a real `.git` directory counts. When `.git` is a file (a worktree or
-    a submodule), the hooks and config are somewhere else and there is nothing
-    here to protect. Symlinks are never followed: a bind mount over a link
-    target would protect something other than the project.
+    `.git` counts as a directory or as a file (a worktree or a submodule,
+    whose `gitdir:` line could otherwise be pointed somewhere else). A
+    symlink is never followed: a bind mount over a link target would protect
+    something other than the project.
     """
-    git_mode = _lstat_mode(os.path.join(source, GIT_DIR))
-    if git_mode is None or not stat.S_ISDIR(git_mode):
+    mode = _lstat_mode(os.path.join(source, GIT_DIR))
+    if mode is None or not (stat.S_ISDIR(mode) or stat.S_ISREG(mode)):
         return ()
-    found = []
-    for relative in GIT_PROTECTED:
-        mode = _lstat_mode(os.path.join(source, relative))
-        if mode is None:
-            continue
-        if relative.endswith("hooks") and stat.S_ISDIR(mode):
-            found.append(relative)
-        elif relative.endswith("config") and stat.S_ISREG(mode):
-            found.append(relative)
-    return tuple(sorted(found))
+    return GIT_PROTECTED
 
 
 def same_dir(first: str, second: str) -> bool:

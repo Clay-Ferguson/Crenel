@@ -2,7 +2,7 @@
 
 ## What this is
 
-Crenel is a PyQt6 desktop app that controls which project folders a QEMU/KVM VM can see. The VM's virtiofs share points at one *share folder* (default `~/vm-share`). Crenel bind-mounts each chosen project from the *projects folder* into it, as **Hidden** (not mounted), **Read** (bind mount remounted read-only) or **Write** (read-write, optionally with `.git/hooks` and `.git/config` self-bound read-only). The state lives only in the kernel's mount table, so a reboot hides everything.
+Crenel is a PyQt6 desktop app that controls which project folders a QEMU/KVM VM can see. The VM's virtiofs share points at one *share folder* (default `~/vm-share`). Crenel bind-mounts each chosen project from the *projects folder* into it, as **Hidden** (not mounted), **Read** (bind mount remounted read-only) or **Write** (read-write, optionally with `.git` self-bound read-only). The state lives only in the kernel's mount table, so a reboot hides everything.
 
 The checkout directory is `access-controller`; the app, package and everything installed are named `crenel`.
 

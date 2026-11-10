@@ -50,7 +50,7 @@ MIN_WIDTH = 640
 
 ROOT_LABEL = "Projects folder (every folder directly inside it is listed):"
 SHARE_LABEL = "VM share folder (point the VM's virtiofs share here):"
-PROTECT_LABEL = "Make .git/hooks and .git/config read-only in projects shared Write"
+PROTECT_LABEL = "Make .git read-only in projects shared Write"
 
 
 class SettingsDialog(QDialog):
@@ -97,10 +97,10 @@ class SettingsDialog(QDialog):
         self.protect_check = QCheckBox(PROTECT_LABEL)
         self.protect_check.setChecked(settings.protect_git)
         self.protect_check.setToolTip(
-            "Stops an agent planting a git hook (or pointing core.hooksPath somewhere\n"
-            "it controls) that would run on the host the next time you use git there.\n"
-            "Inside the VM, 'git config' and 'git remote add' then fail for those\n"
-            "projects. Commits, branches and pushes still work."
+            "Stops an agent planting a git hook, or swapping in a .git of its own,\n"
+            "that would run on the host the next time you use git there. Inside\n"
+            "the VM git can then only read: commits, fetches and anything else that\n"
+            "writes to .git fail for those projects. Do them on the host."
         )
         apply_checkboxes(self.protect_check)
         self._layout.addWidget(self.protect_check)

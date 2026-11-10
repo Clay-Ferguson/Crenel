@@ -3,7 +3,7 @@
 One YAML file at `CONFIG_PATH` holds the three things the settings dialog
 edits: the projects folder whose subfolders the window lists, the share
 folder the VM's virtiofs share points at, and whether projects shared Write
-get their git hooks and config protected.
+get their `.git` made read-only.
 
 Every key is described once, in `KEYS`, and loading and rendering are driven
 from that table. Adding a setting is a `Settings` field, a `KEYS` row and a
@@ -90,9 +90,9 @@ SHARE_COMMENT = """\
 """
 
 PROTECT_COMMENT = """\
-  # Whether a project shared Write gets its .git/hooks and .git/config made
-  # read-only inside the VM, so an agent cannot plant a hook that runs on the
-  # host the next time you use git there.
+  # Whether a project shared Write gets its .git made read-only inside the
+  # VM, so an agent cannot plant a hook (or a .git of its own) that runs on
+  # the host the next time you use git there. Git in the VM can only read.
 """
 
 STRING = "string"

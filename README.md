@@ -14,7 +14,7 @@ This application was created primarily for the use case of AI Agents running in 
 
 - The VM shares one folder; Crenel bind-mounts only the projects you choose into it. Nothing is copied, and edits land in your real project.
 - Read-only is enforced by the host kernel. Nothing in the VM, root included, can write through it.
-- Optional git protection: `.git/hooks` and `.git/config` stay read-only in writable projects, so an agent cannot plant a hook that runs on your host.
+- Optional git protection: `.git` stays read-only in writable projects, so an agent cannot plant a git hook that runs on your host.
 - Everything is hidden again after a reboot.
 - **Show Commands** previews exactly what Apply will do. Crenel runs as you, and only a small, strict helper runs as root through `pkexec`.
 

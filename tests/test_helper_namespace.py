@@ -32,7 +32,8 @@ import pytest
 
 REPO = Path(__file__).resolve().parent.parent
 
-# The VM's side: answers "w <path>" with whether it can write there.
+# The VM's side: answers "w <path>" with whether it can write there, and
+# "r <path>" with whether it can rename it (to <path>-old).
 VM_VIEW = r"""
 import sys
 for line in sys.stdin:
@@ -40,6 +41,8 @@ for line in sys.stdin:
     try:
         if kind == "w":
             open(path, "a").close()
+        elif kind == "r":
+            __import__("os").rename(path, path + "-old")
         elif kind == "l":
             print(" ".join(sorted(__import__("os").listdir(path))), flush=True)
             continue
@@ -108,6 +111,8 @@ for op in script:
         out.append(can_write(os.path.join(root, op[1])))
     elif kind == "vm":                # through the share, from the VM's view
         out.append(ask_vm("w", os.path.join(share, op[1])) == "yes")
+    elif kind == "vm_rename":
+        out.append(ask_vm("r", os.path.join(share, op[1])) == "yes")
     elif kind == "vm_list":
         out.append(ask_vm("l", share).split())
     elif kind == "host_mounts":
@@ -172,13 +177,17 @@ def test_write_protects_git_in_the_vm_and_nowhere_else(projects):
         ["vm", "ABC/new-file"],
         ["vm", "ABC/.git/config"],
         ["vm", "ABC/.git/hooks/pre-commit"],
+        ["vm", "ABC/.git/commondir"],
+        ["vm_rename", "ABC/.git"],
         ["host", "ABC/.git/config"],
         ["host", "ABC/.git/hooks/pre-commit"],
         ["host_mounts"],
     ])
-    assert out[0]["states"]["ABC"] == ["write", [".git/config", ".git/hooks"]]
-    assert out[1:6] == [True, False, False, True, True]
-    assert out[6] == []  # nothing mounted on the real project
+    assert out[0]["states"]["ABC"] == ["write", [".git"]]
+    # The VM writes the project, but nothing in .git, and cannot swap .git out.
+    assert out[1:6] == [True, False, False, False, False]
+    assert out[6:8] == [True, True]  # your own .git stays writable
+    assert out[8] == []  # nothing mounted on the real project
 
 
 def test_switching_modes_reaches_the_vm(projects):
@@ -247,3 +256,18 @@ def test_a_bad_request_changes_nothing(projects):
     out = drive(root, share, [["apply", [["../etc", "read"]], {}], ["listdir"]])
     assert out[0]["code"] == 2 and "folder name" in out[0]["reply"]["error"]
     assert out[1] == []
+
+
+def test_a_git_file_is_protected_too(projects):
+    """A worktree's `.git` file could otherwise be pointed at another gitdir."""
+    root, share = projects
+    with open(os.path.join(root, "ghi", ".git"), "w") as handle:
+        handle.write("gitdir: /elsewhere\n")
+    out = drive(root, share, [
+        ["apply", [["ghi", "write"]], {}],
+        ["vm", "ghi/.git"],
+        ["vm_rename", "ghi/.git"],
+        ["vm", "ghi/new-file"],
+    ])
+    assert out[0]["states"]["ghi"] == ["write", [".git"]]
+    assert out[1:] == [False, False, True]

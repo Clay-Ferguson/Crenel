@@ -247,8 +247,8 @@ Description: choose which project folders a VM can see
  Crenel lists the folders in your projects folder and lets you make each one
  Hidden, Read or Write for a QEMU/KVM virtual machine. It bind-mounts the
  chosen projects into the one folder the VM's virtiofs share points at, read
- only where you say so, and can make a writable project's git hooks and
- config read-only. Changes are applied together after one password prompt.
+ only where you say so, and can make a writable project's .git
+ read-only. Changes are applied together after one password prompt.
 EOF
 
 # -- build -------------------------------------------------------------------

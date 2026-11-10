@@ -35,7 +35,8 @@ SOURCE_ROOT = PACKAGE_DIR.parent
 SYSTEM_PYTHON = "/usr/bin/python3"
 
 # What the system python runs in a checkout: put the tree on the path (argv[1])
-# and call the helper. -I keeps PYTHONPATH and ~/.local out of a root process.
+# and call the helper. -I keeps PYTHONPATH and ~/.local out of a root process,
+# and -B stops it writing root-owned .pyc files into the checkout.
 BOOTSTRAP = (
     "import sys; sys.path.insert(0, sys.argv[1]); "
     "from crenel.helper import main; sys.exit(main())"
@@ -49,7 +50,7 @@ def helper_argv() -> list[str] | None:
         return None
     if PACKAGE_DIR.is_relative_to(INSTALLED_LIB) and os.path.exists(INSTALLED_HELPER):
         return [pkexec, str(INSTALLED_HELPER)]
-    return [pkexec, SYSTEM_PYTHON, "-I", "-c", BOOTSTRAP, str(SOURCE_ROOT)]
+    return [pkexec, SYSTEM_PYTHON, "-I", "-B", "-c", BOOTSTRAP, str(SOURCE_ROOT)]
 
 
 class HelperRunner(QObject):

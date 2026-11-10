@@ -94,7 +94,7 @@ def applied_states(monkeypatch, states):
 def test_a_successful_apply_is_confirmed(window, runner, dialogs, monkeypatch):
     window.choose("ABC", WRITE)
     window.choose("DEF", READ)
-    git = (".git/config", ".git/hooks")
+    git = (".git",)
     applied_states(monkeypatch, {
         "ABC": FolderState("ABC", WRITE, git, git),
         "DEF": FolderState("DEF", READ),
@@ -163,8 +163,7 @@ def test_failures_are_reported(window, runner, dialogs):
 
 def test_hide_all(window, monkeypatch, projects):
     states = {
-        "ABC": FolderState("ABC", WRITE, (".git/config", ".git/hooks"),
-                           (".git/config", ".git/hooks")),
+        "ABC": FolderState("ABC", WRITE, (".git",), (".git",)),
         "DEF": FolderState("DEF", READ),
     }
     monkeypatch.setattr(window_module, "read_states", lambda root, share: states)
@@ -196,7 +195,7 @@ def test_a_conflict_row(window, monkeypatch):
 
 
 def test_git_protection_setting_marks_write_folders(window, monkeypatch, conf):
-    states = {"ABC": FolderState("ABC", WRITE, (), (".git/hooks",))}
+    states = {"ABC": FolderState("ABC", WRITE, (), (".git",))}
     monkeypatch.setattr(window_module, "read_states", lambda root, share: states)
     window.refresh(ask=False)
     assert [c.name for c in window.pending()] == ["ABC"]  # protection missing

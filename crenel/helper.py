@@ -301,7 +301,7 @@ def do_bind(source: str, target: str, uid: int) -> None:
 
     When source and target differ, the source has to be a folder owned by the
     caller. That is what stops this from ever exposing someone else's data.
-    A self-bind (the git protections) exposes nothing new and is not checked.
+    A self-bind (the git protection) exposes nothing new and is not checked.
     """
     source_fd = open_nofollow(source)
     target_fd = source_fd

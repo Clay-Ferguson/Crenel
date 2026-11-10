@@ -398,7 +398,7 @@ class MainWindow(QMainWindow):
             item.setData(Qt.ItemDataRole.ForegroundRole, None)
         tip = f"Now: {MODE_WORDS[state.mode]}"
         if state.git_mounts:
-            tip += " (git hooks and config protected)"
+            tip += " (.git read-only)"
         if state.detail:
             tip += f"\n{state.detail}"
         desired = self._desired[name]

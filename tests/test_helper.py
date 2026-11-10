@@ -130,7 +130,7 @@ def test_remount_flags_keep_the_other_options():
 
 
 def test_exposure_ranks():
-    git = (".git/hooks",)
+    git = (".git",)
     assert exposure(FolderState("a", HIDDEN), True) == 0
     assert exposure(FolderState("a", READ), True) == 1
     assert exposure(FolderState("a", WRITE, git, git), True) == 2

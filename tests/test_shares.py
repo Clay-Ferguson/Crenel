@@ -33,7 +33,7 @@ from crenel.shares import (
 ROOT = "/home/me/projects"
 SHARE = "/home/me/vm-share"
 STAGE = "/run/crenel-stage"
-GIT = (".git/config", ".git/hooks")
+GIT = (".git",)
 
 MOUNTINFO = (
     "22 1 259:2 / / rw,relatime shared:1 - ext4 /dev/nvme0n1p2 rw\n"
@@ -82,14 +82,13 @@ def test_git_targets(projects):
     assert git_targets(os.path.join(root, "DEF")) == ()
 
 
-def test_git_targets_ignores_a_git_file_and_symlinks(tmp_path):
+def test_git_targets_protects_a_git_file_but_never_a_symlink(tmp_path):
     (tmp_path / "wt").mkdir()
     (tmp_path / "wt" / ".git").write_text("gitdir: elsewhere\n")
-    assert git_targets(str(tmp_path / "wt")) == ()
-    (tmp_path / "repo" / ".git").mkdir(parents=True)
-    os.symlink("/etc", tmp_path / "repo" / ".git" / "hooks")
-    (tmp_path / "repo" / ".git" / "config").write_text("")
-    assert git_targets(str(tmp_path / "repo")) == (".git/config",)
+    assert git_targets(str(tmp_path / "wt")) == GIT
+    (tmp_path / "linked").mkdir()
+    os.symlink("/etc", tmp_path / "linked" / ".git")
+    assert git_targets(str(tmp_path / "linked")) == ()
 
 
 def classify_with(entries, is_same_dir=same, found=GIT):
@@ -104,8 +103,7 @@ def test_classify_hidden_read_write():
     state = classify_with(
         [
             entry(SHARE + "/ABC"),
-            entry(SHARE + "/ABC/.git/hooks", ro=True),
-            entry(SHARE + "/ABC/.git/config", ro=True),
+            entry(SHARE + "/ABC/.git", ro=True),
         ]
     )
     assert state.mode == WRITE and state.git_mounts == GIT
@@ -119,8 +117,11 @@ def test_classify_conflicts():
     assert classify_with([entry(SHARE + "/ABC")], is_same_dir=differ).mode == CONFLICT
     assert classify_with([entry(SHARE + "/ABC"), entry(SHARE + "/ABC")]).mode == CONFLICT
     assert classify_with([entry(SHARE + "/ABC/sub")]).mode == CONFLICT
-    rw_hooks = [entry(SHARE + "/ABC"), entry(SHARE + "/ABC/.git/hooks")]
-    assert classify_with(rw_hooks).mode == CONFLICT
+    rw_git = [entry(SHARE + "/ABC"), entry(SHARE + "/ABC/.git")]
+    assert classify_with(rw_git).mode == CONFLICT
+    # The old protections (hooks and config only) are not this one.
+    old = [entry(SHARE + "/ABC"), entry(SHARE + "/ABC/.git/hooks", ro=True)]
+    assert classify_with(old).mode == CONFLICT
 
 
 def test_needs_change_counts_git_protection():
@@ -158,10 +159,8 @@ def test_hidden_to_write_gets_its_git_protection_before_it_is_moved_in():
     assert plan(WRITE, []) == [
         Step(BIND, S, SRC),
         Step(PRIVATE, S),
-        Step(BIND, S + "/.git/config", S + "/.git/config"),
-        Step(READONLY, S + "/.git/config"),
-        Step(BIND, S + "/.git/hooks", S + "/.git/hooks"),
-        Step(READONLY, S + "/.git/hooks"),
+        Step(BIND, S + "/.git", S + "/.git"),
+        Step(READONLY, S + "/.git"),
         Step(MKDIR, D),
         Step(MOVE, D, S),
     ]
@@ -176,21 +175,17 @@ def test_write_without_git_protection():
 def test_nothing_is_ever_changed_in_place():
     """A remount would change only the host's copy, never the VM's, so every
     change to a share takes it down and builds it again."""
-    shared = [entry(D), entry(D + "/.git/hooks", ro=True), entry(D + "/.git/config", ro=True)]
+    shared = [entry(D), entry(D + "/.git", ro=True)]
     for mode in (READ, WRITE):
         steps = plan(mode, shared, protect=mode == READ)
-        assert steps[:3] == [
-            Step(UMOUNT, D + "/.git/config"),
-            Step(UMOUNT, D + "/.git/hooks"),
-            Step(UMOUNT, D),
-        ]
+        assert steps[:2] == [Step(UMOUNT, D + "/.git"), Step(UMOUNT, D)]
         assert steps[-1] == Step(MOVE, D, S)
     assert not [s for s in plan(WRITE, [entry(D, ro=True)]) if s.path == D and s.kind == READONLY]
 
 
 def test_hide_unmounts_deepest_first_then_removes_the_folder():
-    entries = [entry(D), entry(D + "/.git/hooks", ro=True)]
-    expected = [Step(UMOUNT, D + "/.git/hooks"), Step(UMOUNT, D), Step(RMDIR, D)]
+    entries = [entry(D), entry(D + "/.git", ro=True)]
+    expected = [Step(UMOUNT, D + "/.git"), Step(UMOUNT, D), Step(RMDIR, D)]
     assert plan(HIDDEN, entries) == expected
 
 
