@@ -23,10 +23,10 @@ two consequences:
   that moment, with the flags it has *then*. Making it read-only afterwards
   changes only the host's copy, and the VM's copy stays writable.
 - A plain bind of a project joins the root filesystem's link group, so
-  anything later mounted inside the share (the git protection) is mirrored
+  anything later mounted inside the share (the protected names) is mirrored
   back onto the real project on the host.
 
-So a share is assembled complete (made private, read-only, git-protected) in
+So a share is assembled complete (made private, read-only, protected) in
 `STAGE_DIR`, a private tmpfs that nothing is linked to. Only then is it moved
 into the share folder, which gives it a link group of its own, and the VM's
 copy arrives finished. A change to an existing share is a fresh re-share,
@@ -56,13 +56,15 @@ CONFLICT = "conflict"
 
 MOUNTINFO = "/proc/self/mountinfo"
 
-# What "protect git" makes read-only inside a project shared Write: the whole
-# `.git`, so nothing in the VM can plant a hook, point git at other hooks or
-# another git directory, or swap `.git` for one of its own (a mount point
-# cannot be renamed or removed). Git in the VM can then read but not write.
-# Relative to the project.
-GIT_DIR = ".git"
-GIT_PROTECTED = (GIT_DIR,)
+# Protected names: folders or files directly inside a project shared Write
+# that are each bind-mounted onto themselves read-only. A mount point cannot
+# be changed, renamed, removed or replaced from the VM. The list is the
+# user's (`Settings.protected`); `.git` is the usual entry, so nothing in the
+# VM can plant a hook, point git at other hooks or another git directory, or
+# swap `.git` for one of its own. Only names directly inside the project are
+# allowed: a deeper path could be got around by renaming its parent folder,
+# which stays writable.
+NAME_MAX = 255
 
 # The helper's scratch spot (see the module docstring): a private tmpfs that
 # exists only while the helper runs, readable by root alone.
@@ -180,6 +182,20 @@ def stray_entries(share: str, entries: Sequence[MountEntry]) -> list[str]:
     return sorted(stray, key=str.casefold)
 
 
+def valid_name(name: object) -> bool:
+    """Whether `name` is one plain path component: no "/", no NUL, not "." or "..".
+
+    The rule for a project's name and for a protected name alike.
+    """
+    return (
+        isinstance(name, str)
+        and 0 < len(os.fsencode(name)) <= NAME_MAX
+        and "/" not in name
+        and "\0" not in name
+        and name not in (".", "..")
+    )
+
+
 def _lstat_mode(path: str) -> int | None:
     try:
         return os.lstat(path).st_mode
@@ -187,22 +203,24 @@ def _lstat_mode(path: str) -> int | None:
         return None
 
 
-def git_targets(source: str) -> tuple[str, ...]:
-    """The entries of `GIT_PROTECTED` that a project really has.
+def find_targets(source: str, names: Iterable[str]) -> tuple[str, ...]:
+    """The protected `names` that the project at `source` really has, sorted.
 
-    `.git` counts as a directory or as a file (a worktree or a submodule,
-    whose `gitdir:` line could otherwise be pointed somewhere else). A
-    symlink is never followed: a bind mount over a link target would protect
-    something other than the project.
+    A name counts as a directory or as a file (`.git` is a file in a worktree
+    or a submodule, whose `gitdir:` line could otherwise be pointed somewhere
+    else). A symlink is never followed: a bind mount over a link target would
+    protect something other than the project.
     """
-    mode = _lstat_mode(os.path.join(source, GIT_DIR))
-    if mode is None or not (stat.S_ISDIR(mode) or stat.S_ISREG(mode)):
-        return ()
-    return GIT_PROTECTED
+    found = []
+    for name in names:
+        mode = _lstat_mode(os.path.join(source, name))
+        if mode is not None and (stat.S_ISDIR(mode) or stat.S_ISREG(mode)):
+            found.append(name)
+    return tuple(sorted(set(found)))
 
 
 def same_dir(first: str, second: str) -> bool:
-    """Whether two paths are the same directory (same device and inode)."""
+    """Whether two paths are the same folder or file (same device and inode)."""
     try:
         a, b = os.stat(first), os.stat(second)
     except OSError:
@@ -217,15 +235,15 @@ def same_dir(first: str, second: str) -> bool:
 class FolderState:
     """What the VM can see of one project right now.
 
-    `git_mounts` are the read-only protections in place (relative paths,
-    sorted), and `git_targets` the ones this project could have. `detail`
+    `protections` are the read-only protected names mounted in place (sorted),
+    and `targets` the ones on the list that this project has. `detail`
     explains a CONFLICT and is empty otherwise.
     """
 
     name: str
     mode: str
-    git_mounts: tuple[str, ...] = ()
-    git_targets: tuple[str, ...] = ()
+    protections: tuple[str, ...] = ()
+    targets: tuple[str, ...] = ()
     detail: str = ""
 
 
@@ -234,23 +252,30 @@ def classify(
     root: str,
     share: str,
     entries: Sequence[MountEntry],
+    protected: Sequence[str],
     *,
     is_same_dir: Callable[[str, str], bool] = same_dir,
-    targets: Callable[[str], tuple[str, ...]] = git_targets,
+    targets: Callable[[str, Sequence[str]], tuple[str, ...]] = find_targets,
 ) -> FolderState:
-    """Work out `name`'s mode from the mounts at and below `<share>/<name>`."""
+    """Work out `name`'s mode from the mounts at and below `<share>/<name>`.
+
+    A mount inside the project counts as a protection if it is a read-only
+    bind of something directly inside the project onto itself, whether or
+    not that name is on the `protected` list right now. One left over from
+    an older list then shows as a change to apply, not as a conflict.
+    """
     destination = os.path.join(share, name)
     source = os.path.join(root, name)
     under = mounts_under(entries, destination)
-    found_targets = targets(source)
+    found_targets = targets(source, protected)
     if not under:
-        return FolderState(name, HIDDEN, git_targets=found_targets)
+        return FolderState(name, HIDDEN, targets=found_targets)
 
     main = [e for e in under if e.mount_point == destination]
     subs = [e for e in under if e.mount_point != destination]
 
     def conflict(detail: str) -> FolderState:
-        return FolderState(name, CONFLICT, git_targets=found_targets, detail=detail)
+        return FolderState(name, CONFLICT, targets=found_targets, detail=detail)
 
     if not main:
         return conflict(f"Something is mounted inside {destination}, but not the project.")
@@ -259,17 +284,22 @@ def classify(
     if not is_same_dir(destination, source):
         return conflict(f"{destination} is mounted from somewhere other than {source}.")
 
-    git_mounts = []
+    protections = []
     for entry in subs:
         relative = os.path.relpath(entry.mount_point, destination)
-        if relative not in GIT_PROTECTED or not entry.read_only or relative in git_mounts:
+        if (
+            not valid_name(relative)
+            or not entry.read_only
+            or relative in protections
+            or not is_same_dir(entry.mount_point, os.path.join(source, relative))
+        ):
             return conflict(f"Unexpected mount inside the project: {entry.mount_point}")
-        git_mounts.append(relative)
+        protections.append(relative)
     mode = READ if main[0].read_only else WRITE
-    return FolderState(name, mode, tuple(sorted(git_mounts)), found_targets)
+    return FolderState(name, mode, tuple(sorted(protections)), found_targets)
 
 
-def read_states(root: str, share: str) -> dict[str, FolderState]:
+def read_states(root: str, share: str, protected: Sequence[str]) -> dict[str, FolderState]:
     """Every project's state, by name.
 
     The names are the folders under `root` plus anything mounted directly
@@ -283,21 +313,21 @@ def read_states(root: str, share: str) -> dict[str, FolderState]:
         if entry.mount_point.startswith(prefix):
             names.add(entry.mount_point[len(prefix):].split("/")[0])
     return {
-        name: classify(name, root, share, entries)
+        name: classify(name, root, share, entries, protected)
         for name in sorted(names, key=str.casefold)
     }
 
 
-def expected_git(mode: str, protect_git: bool, targets: Sequence[str]) -> tuple[str, ...]:
-    """The git protections a folder in `mode` should have."""
-    return tuple(sorted(targets)) if mode == WRITE and protect_git else ()
+def expected_protections(mode: str, targets: Sequence[str]) -> tuple[str, ...]:
+    """The protections a folder in `mode` with these `targets` should have."""
+    return tuple(sorted(targets)) if mode == WRITE else ()
 
 
-def needs_change(state: FolderState, desired: str, protect_git: bool) -> bool:
+def needs_change(state: FolderState, desired: str) -> bool:
     """Whether Apply has anything to do to make `state` match `desired`."""
     if state.mode != desired:
         return True
-    return state.git_mounts != expected_git(desired, protect_git, state.git_targets)
+    return state.protections != expected_protections(desired, state.targets)
 
 
 # -- the steps that change it ------------------------------------------------------
@@ -349,12 +379,12 @@ def plan_folder(
     change: Change,
     root: str,
     share: str,
-    protect_git: bool,
+    protected: Sequence[str],
     entries: Sequence[MountEntry],
     *,
     stage: str = STAGE_DIR,
     is_same_dir: Callable[[str, str], bool] = same_dir,
-    targets: Callable[[str], tuple[str, ...]] = git_targets,
+    targets: Callable[[str, Sequence[str]], tuple[str, ...]] = find_targets,
 ) -> FolderPlan:
     """The steps that take one folder from what `entries` says to `change.mode`.
 
@@ -368,7 +398,7 @@ def plan_folder(
     source = os.path.join(root, change.name)
     staged = os.path.join(stage, change.name)
     state = classify(
-        change.name, root, share, entries, is_same_dir=is_same_dir, targets=targets
+        change.name, root, share, entries, protected, is_same_dir=is_same_dir, targets=targets
     )
     plan = FolderPlan(change)
     steps = plan.steps
@@ -384,7 +414,7 @@ def plan_folder(
     steps.append(Step(PRIVATE, staged))
     if change.mode == READ:
         steps.append(Step(READONLY, staged))
-    for relative in expected_git(change.mode, protect_git, state.git_targets):
+    for relative in expected_protections(change.mode, state.targets):
         path = os.path.join(staged, relative)
         steps.append(Step(BIND, path, path))
         steps.append(Step(READONLY, path))
@@ -397,12 +427,12 @@ def plan_changes(
     changes: Iterable[Change],
     root: str,
     share: str,
-    protect_git: bool,
+    protected: Sequence[str],
     entries: Sequence[MountEntry],
     **probes,
 ) -> list[FolderPlan]:
     """`plan_folder` for every change, in the order given."""
-    return [plan_folder(c, root, share, protect_git, entries, **probes) for c in changes]
+    return [plan_folder(c, root, share, protected, entries, **probes) for c in changes]
 
 
 def stage_setup_commands(stage: str = STAGE_DIR) -> list[str]:

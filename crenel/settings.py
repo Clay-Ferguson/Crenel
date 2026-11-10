@@ -1,4 +1,4 @@
-"""The settings dialog: the two folders, and git protection.
+"""The settings dialog: the two folders, and the protected names.
 
 DupFinder's dialog layout: a stack of labelled sections in a QVBoxLayout,
 sized to its contents, with Save and Cancel pinned at the bottom. Adding a
@@ -14,17 +14,17 @@ from __future__ import annotations
 from html import escape
 
 from PyQt6.QtWidgets import (
-    QCheckBox,
     QDialog,
     QFileDialog,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QMessageBox,
+    QPlainTextEdit,
     QVBoxLayout,
     QWidget,
 )
-from windowchrome import apply_checkboxes
+from windowchrome import apply_scrollbars
 
 from . import APP_NAME
 from .config import (
@@ -32,7 +32,9 @@ from .config import (
     Settings,
     ensure_share_dir,
     folder_problems,
+    is_comment,
     load_settings,
+    protected_problems,
     real_path,
     save_settings,
 )
@@ -51,7 +53,21 @@ MIN_WIDTH = 640
 
 ROOT_LABEL = "Projects folder (every folder directly inside it is listed):"
 SHARE_LABEL = "VM share folder (point the VM's virtiofs share here):"
-PROTECT_LABEL = "Make .git read-only in projects shared Write"
+PROTECTED_LABEL = (
+    "Read-only in projects shared Write (one name per line, e.g. .git; "
+    "a line starting with # is ignored):"
+)
+PROTECTED_TIP = (
+    "Folders or files directly inside each project shared Write that the VM\n"
+    "can read but not change, rename, remove or replace. Names only, not\n"
+    "paths: list .vscode rather than .vscode/tasks.json. A line starting\n"
+    "with # is a comment, kept but ignored: \"# .envrc\" turns .envrc off.\n\n"
+    "With .git listed, an agent cannot plant a git hook (or a .git of its own)\n"
+    "that would run on the host the next time you use git there. Git in the VM\n"
+    "can then only read: commit, fetch and the rest on the host."
+)
+# How many lines the protected names box shows before it scrolls.
+PROTECTED_ROWS = 4
 
 # How many stray items a message names before it just counts the rest.
 STRAY_LISTED = 10
@@ -72,7 +88,7 @@ def stray_text(share: str, names: list[str]) -> str:
 
 
 class SettingsDialog(QDialog):
-    """Edit the projects folder, the share folder and git protection."""
+    """Edit the projects folder, the share folder and the protected names."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -112,17 +128,7 @@ class SettingsDialog(QDialog):
             ),
         )
 
-        self._layout.addSpacing(SECTION_SPACING - LABEL_SPACING)
-        self.protect_check = QCheckBox(PROTECT_LABEL)
-        self.protect_check.setChecked(settings.protect_git)
-        self.protect_check.setToolTip(
-            "Stops an agent planting a git hook, or swapping in a .git of its own,\n"
-            "that would run on the host the next time you use git there. Inside\n"
-            "the VM git can then only read: commits, fetches and anything else that\n"
-            "writes to .git fail for those projects. Do them on the host."
-        )
-        apply_checkboxes(self.protect_check)
-        self._layout.addWidget(self.protect_check)
+        self.protected_edit = self._add_protected(settings.protected)
 
         self._layout.addStretch(1)
         self._layout.addSpacing(SECTION_SPACING - LABEL_SPACING)
@@ -155,6 +161,24 @@ class SettingsDialog(QDialog):
         self._layout.addLayout(row)
         return edit
 
+    def _add_protected(self, names: tuple[str, ...]) -> QPlainTextEdit:
+        """The protected names: a few lines tall, scrolling past that."""
+        self._layout.addSpacing(SECTION_SPACING - LABEL_SPACING)
+        caption = QLabel(PROTECTED_LABEL)
+        caption.setWordWrap(True)
+        caption.setToolTip(PROTECTED_TIP)
+        self._layout.addWidget(caption)
+
+        edit = QPlainTextEdit("\n".join(names))
+        edit.setFont(mono_font())
+        edit.setToolTip(PROTECTED_TIP)
+        edit.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        apply_scrollbars(edit)
+        margin = 2 * (edit.document().documentMargin() + edit.frameWidth())
+        edit.setFixedHeight(round(edit.fontMetrics().lineSpacing() * PROTECTED_ROWS + margin))
+        self._layout.addWidget(edit)
+        return edit
+
     def _button_row(self) -> QHBoxLayout:
         save = action_button("Save", PRIMARY_BUTTON_BG, uniform=True)
         save.setDefault(True)
@@ -176,17 +200,24 @@ class SettingsDialog(QDialog):
             edit.setText(chosen)
 
     def candidate(self) -> Settings:
-        """The settings as the fields stand now."""
+        """The settings as the fields stand now.
+
+        The protected names are the non-blank lines, each once, names without
+        a trailing "/" and comments as written. Ones that are not plain names
+        are kept for `_save` to refuse.
+        """
+        lines = (line.strip() for line in self.protected_edit.toPlainText().split("\n"))
+        lines = (line if is_comment(line) else line.rstrip("/") for line in lines)
         return Settings(
             projects_root=self.root_edit.text().strip(),
             share_dir=self.share_edit.text().strip(),
-            protect_git=self.protect_check.isChecked(),
+            protected=tuple(dict.fromkeys(line for line in lines if line)),
         )
 
     def _save(self) -> None:
-        """Check the folders, create the share folder, write the file, close."""
+        """Check the fields, create the share folder, write the file, close."""
         settings = self.candidate()
-        problems = folder_problems(settings)
+        problems = folder_problems(settings) + protected_problems(settings.protected)
         if problems:
             QMessageBox.warning(self, f"{APP_NAME} — Settings", "\n\n".join(problems))
             return

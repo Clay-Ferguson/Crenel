@@ -246,7 +246,7 @@ class MainWindow(QMainWindow):
 
         options = bar.addMenu("&Options")
         self.settings_action = QAction("&Settings", self)
-        self.settings_action.setStatusTip("The projects folder, the share folder, git protection")
+        self.settings_action.setStatusTip("The projects folder, the share folder, protected names")
         self.settings_action.triggered.connect(self.open_settings)
         options.addAction(self.settings_action)
         guide_action = QAction("&User Guide", self)
@@ -303,7 +303,9 @@ class MainWindow(QMainWindow):
         stray: list[str] = []
         if not problems:
             try:
-                states = read_states(settings.root_path, settings.share_path)
+                states = read_states(
+                    settings.root_path, settings.share_path, settings.protected_names
+                )
                 stray = stray_entries(settings.share_path, read_mountinfo())
             except OSError as exc:
                 problems = [f"Could not read the mount table: {exc.strerror or exc}"]
@@ -403,8 +405,8 @@ class MainWindow(QMainWindow):
         else:
             item.setData(Qt.ItemDataRole.ForegroundRole, None)
         tip = f"Now: {MODE_WORDS[state.mode]}"
-        if state.git_mounts:
-            tip += " (.git read-only)"
+        if state.protections:
+            tip += f" (read-only: {', '.join(map(printable, state.protections))})"
         if state.detail:
             tip += f"\n{state.detail}"
         desired = self._desired[name]
@@ -418,7 +420,7 @@ class MainWindow(QMainWindow):
         desired = self._desired.get(name)
         if desired is None:
             return False
-        return needs_change(self._states[name], desired, self._settings.protect_git)
+        return needs_change(self._states[name], desired)
 
     def pending(self) -> list[Change]:
         """The changes Apply would make, in list order."""
@@ -490,7 +492,7 @@ class MainWindow(QMainWindow):
             changes,
             settings.root_path,
             settings.share_path,
-            settings.protect_git,
+            settings.protected_names,
             read_mountinfo(),
         )
         lines = [
@@ -594,15 +596,15 @@ class MainWindow(QMainWindow):
         return headline + "\n\n" + "\n".join(lines)
 
     def _describe(self, name: str, requested: str) -> str:
-        """`name`'s current state in words, e.g. "writable, git protected"."""
+        """`name`'s current state in words, e.g. "writable, protected: .git"."""
         state = self._states.get(name)
         if state is None:
             # A hidden project that no longer exists on the host drops out
             # of the list altogether.
             return MODE_WORDS[requested]
         text = MODE_WORDS[state.mode]
-        if state.mode == WRITE and state.git_mounts:
-            text += ", git protected"
+        if state.mode == WRITE and state.protections:
+            text += f", protected: {', '.join(map(printable, state.protections))}"
         return text
 
     def _on_reply(self, reply: HelperReply) -> None:

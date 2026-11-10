@@ -4,8 +4,8 @@ The window never runs as root. When you press Apply it starts this module
 through `pkexec`, which asks for your password. It sends one JSON request on
 stdin and reads one JSON reply from stdout:
 
-    request  {"protocol": 1, "root": "/home/me/projects", "share": "/home/me/vm-share",
-              "protect_git": true, "force": false,
+    request  {"protocol": 2, "root": "/home/me/projects", "share": "/home/me/vm-share",
+              "protected": [".git"], "force": false,
               "changes": [{"name": "ABC", "mode": "write"}, ...]}
     reply    {"results": [{"name": "ABC", "mode": "write", "ok": true, "busy": false,
                            "error": "", "warning": ""}, ...]}
@@ -15,7 +15,7 @@ This is Crenel's security boundary, so it trusts nothing it is sent:
 
 - **Paths.** The root and share folders must be absolute, normalized, owned by
   the caller (`PKEXEC_UID`), contain no symlinks anywhere, and not overlap.
-  Folder names must be single path components.
+  Folder names, and the protected names, must be single path components.
 - **No symlink races.** Every path is opened one component at a time with
   O_NOFOLLOW, and the mount system calls are given `/proc/self/fd/N`. A link
   swapped in after the checks therefore makes the step fail instead of
@@ -29,7 +29,7 @@ This is Crenel's security boundary, so it trusts nothing it is sent:
   (`shares.STAGE_DIR`, a root-only tmpfs that exists only while the helper
   runs) and moved into the share folder complete. The VM's copy of a mount is
   made when the mount arrives, so this is what makes Read read-only *in the
-  VM* and keeps git protections off the real project. See `shares.py`.
+  VM* and keeps the protections off the real project. See `shares.py`.
 - **Checked results.** After each folder it re-reads /proc/self/mountinfo. If a
   folder ends up with *more* access than it had before and more than was
   asked for, the helper detaches it completely and reports the failure.
@@ -69,20 +69,23 @@ from .shares import (
     FolderState,
     MountEntry,
     classify,
-    expected_git,
+    expected_protections,
     mounts_under,
     plan_changes,
     read_mountinfo,
     render_step,
+    valid_name,
 )
 
-PROTOCOL = 1
+PROTOCOL = 2
 
 # More than any real request (a few hundred folders' names), and a bound on
 # what a stray writer to our stdin can make us parse as root.
 MAX_REQUEST_BYTES = 1 << 20
 
-NAME_MAX = 255
+# More protected names than anyone needs, and a bound on the mounts one
+# folder can be asked for.
+MAX_PROTECTED = 64
 
 # <sys/mount.h>
 MS_RDONLY = 0x1
@@ -126,23 +129,12 @@ class Busy(OSError):
 class Request:
     root: str
     share: str
-    protect_git: bool
+    protected: tuple[str, ...]
     force: bool
     changes: tuple[Change, ...]
 
 
 # -- validation ------------------------------------------------------------------
-
-
-def valid_name(name: object) -> bool:
-    """Whether `name` is one plain path component: no "/", no NUL, not "." or ".."."""
-    return (
-        isinstance(name, str)
-        and 0 < len(os.fsencode(name)) <= NAME_MAX
-        and "/" not in name
-        and "\0" not in name
-        and name not in (".", "..")
-    )
 
 
 def check_folder(path: object, uid: int, what: str) -> str:
@@ -191,10 +183,17 @@ def validate_request(data: object, uid: int) -> Request:
     share = check_folder(data.get("share"), uid, "share folder")
     if _inside(share, root) or _inside(root, share):
         raise RequestError("The share folder and the projects folder must not contain each other.")
-    protect_git = data.get("protect_git")
     force = data.get("force")
-    if not isinstance(protect_git, bool) or not isinstance(force, bool):
-        raise RequestError("protect_git and force must be true or false.")
+    if not isinstance(force, bool):
+        raise RequestError("force must be true or false.")
+    protected = data.get("protected")
+    if not isinstance(protected, list) or len(protected) > MAX_PROTECTED:
+        raise RequestError(f"protected must be a list of at most {MAX_PROTECTED} names.")
+    for item in protected:
+        if not valid_name(item):
+            raise RequestError(f"{item!r} is not a name directly inside a project.")
+    if len(set(protected)) != len(protected):
+        raise RequestError("protected lists a name twice.")
     raw = data.get("changes")
     if not isinstance(raw, list):
         raise RequestError("changes must be a list.")
@@ -213,7 +212,7 @@ def validate_request(data: object, uid: int) -> Request:
             raise RequestError(f"{name} appears twice.")
         seen.add(name)
         changes.append(Change(name, str(mode)))
-    return Request(root, share, protect_git, force, tuple(changes))
+    return Request(root, share, tuple(protected), force, tuple(changes))
 
 
 # -- system calls --------------------------------------------------------------------
@@ -301,7 +300,7 @@ def do_bind(source: str, target: str, uid: int) -> None:
 
     When source and target differ, the source has to be a folder owned by the
     caller. That is what stops this from ever exposing someone else's data.
-    A self-bind (the git protection) exposes nothing new and is not checked.
+    A self-bind (a protected name) exposes nothing new and is not checked.
     """
     source_fd = open_nofollow(source)
     target_fd = source_fd
@@ -365,7 +364,7 @@ def do_move(source: str, target: str) -> None:
     """Move the finished share at `source` (in the scratch spot) onto `target`.
 
     The VM's copy is made at this moment, from the mount as it now is:
-    read-only if it is read-only, with its git protections inside it.
+    read-only if it is read-only, with its protections inside it.
     """
     source_fd = open_nofollow(source)
     try:
@@ -474,24 +473,25 @@ def do_rmdir(path: str) -> str:
 # -- applying a request ------------------------------------------------------------------
 
 
-def exposure(state: FolderState, protect_git: bool) -> int:
+def exposure(state: FolderState) -> int:
     """How much the VM can do to a folder in `state`, as a rank.
 
-    0 hidden, 1 read, 2 write with every git protection asked for in place,
-    3 write without them, 4 something unrecognized.
+    0 hidden, 1 read, 2 write with every protection asked for in place,
+    3 write without them, 4 something unrecognized. What was asked for is
+    in `state.targets`, worked out from the request's protected names.
     """
     if state.mode == HIDDEN:
         return 0
     if state.mode == READ:
         return 1
     if state.mode == WRITE:
-        wanted = expected_git(WRITE, protect_git, state.git_targets)
-        return 2 if set(wanted) <= set(state.git_mounts) else 3
+        wanted = expected_protections(WRITE, state.targets)
+        return 2 if set(wanted) <= set(state.protections) else 3
     return 4
 
 
-def _desired_exposure(mode: str, protect_git: bool) -> int:
-    return {HIDDEN: 0, READ: 1, WRITE: 2 if protect_git else 3}[mode]
+def _desired_exposure(mode: str, protected: tuple[str, ...]) -> int:
+    return {HIDDEN: 0, READ: 1, WRITE: 2 if protected else 3}[mode]
 
 
 def _run_step(step, request: Request, uid: int, gid: int, stage: str) -> str:
@@ -518,7 +518,7 @@ def _run_step(step, request: Request, uid: int, gid: int, stage: str) -> str:
 
 
 def _state(request: Request, name: str) -> FolderState:
-    return classify(name, request.root, request.share, read_mountinfo())
+    return classify(name, request.root, request.share, read_mountinfo(), request.protected)
 
 
 def _hide_everything(request: Request, name: str) -> None:
@@ -574,7 +574,7 @@ def apply_folder(
     after = _state(request, change.name)
     if result["ok"] and (
         after.mode != change.mode
-        or after.git_mounts != expected_git(change.mode, request.protect_git, after.git_targets)
+        or after.protections != expected_protections(change.mode, after.targets)
     ):
         detail = f" ({after.detail})" if after.mode == CONFLICT else ""
         result.update(ok=False, error=f"Afterwards the folder is {after.mode}{detail}.")
@@ -587,10 +587,10 @@ def apply_folder(
             pass
 
     allowed = max(
-        exposure(before, request.protect_git),
-        _desired_exposure(change.mode, request.protect_git),
+        exposure(before),
+        _desired_exposure(change.mode, request.protected),
     )
-    if exposure(after, request.protect_git) > allowed:
+    if exposure(after) > allowed:
         _hide_everything(request, change.name)
         result.update(
             ok=False,
@@ -611,7 +611,7 @@ def apply_request(request: Request, uid: int, gid: int) -> list[dict]:
         request.changes,
         request.root,
         request.share,
-        request.protect_git,
+        request.protected,
         read_mountinfo(),
         stage=stage,
     )

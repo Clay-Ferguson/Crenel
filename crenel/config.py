@@ -2,8 +2,9 @@
 
 One YAML file at `CONFIG_PATH` holds the three things the settings dialog
 edits: the projects folder whose subfolders the window lists, the share
-folder the VM's virtiofs share points at, and whether projects shared Write
-get their `.git` made read-only.
+folder the VM's virtiofs share points at, and the protected names, the
+folders or files inside each project shared Write that are made read-only
+(`.git` by default).
 
 Every key is described once, in `KEYS`, and loading and rendering are driven
 from that table. Adding a setting is a `Settings` field, a `KEYS` row and a
@@ -21,8 +22,11 @@ temp file and `os.replace`.
 from __future__ import annotations
 
 import os
+from collections.abc import Iterable
 from dataclasses import dataclass, fields
 from typing import Any
+
+from .shares import valid_name
 
 try:
     import yaml
@@ -38,7 +42,11 @@ CONFIG_PATH = os.path.expanduser("~/.config/crenel/crenel-config.yaml")
 # obvious what the VM is pointed at. The projects folder has no default,
 # since guessing would mean listing (and offering to share) the wrong tree.
 DEFAULT_SHARE_DIR = "~/vm-share"
-DEFAULT_PROTECT_GIT = True
+DEFAULT_PROTECTED = (".git",)
+
+# A protected-names line starting with this is a comment: kept, but ignored.
+# (So a name really starting with "#" cannot be protected.)
+COMMENT = "#"
 
 
 @dataclass(frozen=True)
@@ -47,7 +55,14 @@ class Settings:
 
     projects_root: str = ""
     share_dir: str = DEFAULT_SHARE_DIR
-    protect_git: bool = DEFAULT_PROTECT_GIT
+    # The protected-names lines as written, comments included. See
+    # `protected_names` for the ones in use.
+    protected: tuple[str, ...] = DEFAULT_PROTECTED
+
+    @property
+    def protected_names(self) -> tuple[str, ...]:
+        """The protected names in use: `protected` without its comment lines."""
+        return tuple(line for line in self.protected if not is_comment(line))
 
     @property
     def root_path(self) -> str:
@@ -58,6 +73,10 @@ class Settings:
     def share_path(self) -> str:
         """The share folder as a real absolute path, or "" if unset."""
         return real_path(self.share_dir) if self.share_dir else ""
+
+
+def is_comment(line: str) -> bool:
+    return line.startswith(COMMENT)
 
 
 def real_path(path: str) -> str:
@@ -89,14 +108,17 @@ SHARE_COMMENT = """\
   # It must not be inside the projects folder, or contain it.
 """
 
-PROTECT_COMMENT = """\
-  # Whether a project shared Write gets its .git made read-only inside the
-  # VM, so an agent cannot plant a hook (or a .git of its own) that runs on
-  # the host the next time you use git there. Git in the VM can only read.
+PROTECTED_COMMENT = """\
+  # Folders or files directly inside each project shared Write that are made
+  # read-only inside the VM, one name per item ([] for none). The usual one
+  # is .git, so an agent cannot plant a hook (or a .git of its own) that runs
+  # on the host the next time you use git there. Names only, never paths.
+  # An item starting with "#" is a comment, kept but ignored.
 """
 
 STRING = "string"
 BOOL = "bool"
+LIST = "list"
 
 
 @dataclass(frozen=True)
@@ -111,10 +133,14 @@ class Key:
 KEYS = (
     Key("projects_root", "folders", "projects_root", STRING, ROOT_COMMENT),
     Key("share_dir", "folders", "share_dir", STRING, SHARE_COMMENT),
-    Key("protect_git", "protection", "protect_git", BOOL, PROTECT_COMMENT),
+    Key("protected", "protection", "protected", LIST, PROTECTED_COMMENT),
 )
 
 SECTIONS = ("folders", "protection")
+
+# Keys older versions wrote, dropped instead of carried through a rewrite.
+# `protect_git` became the `protected` list (see `_migrated`).
+RETIRED = {("protection", "protect_git")}
 
 assert sorted(key.field for key in KEYS) == sorted(f.name for f in fields(Settings))
 
@@ -141,6 +167,11 @@ def _indent_yaml(mapping: dict, indent: str) -> str:
 
 
 def _render_key(key: Key, value: Any) -> str:
+    if key.kind == LIST:
+        if not value:
+            return f"{key.comment}  {key.name}: []\n"
+        items = "".join(f"    - {_quote(item)}\n" for item in value)
+        return f"{key.comment}  {key.name}:\n{items}"
     text = ("true" if value else "false") if key.kind == BOOL else _quote(value)
     return f"{key.comment}  {key.name}: {text}\n"
 
@@ -154,7 +185,11 @@ def render_config(settings: Settings, config: dict | None = None) -> str:
         known = {key.name for key in keys}
         text += f"\n{section}:\n"
         text += "\n".join(_render_key(key, getattr(settings, key.field)) for key in keys)
-        extra = {k: v for k, v in _section(config.get(section)).items() if k not in known}
+        extra = {
+            k: v
+            for k, v in _section(config.get(section)).items()
+            if k not in known and (section, k) not in RETIRED
+        }
         text += _indent_yaml(extra, "  ")
     extra_top = {k: v for k, v in config.items() if k not in SECTIONS}
     return text + _indent_yaml(extra_top, "")
@@ -199,9 +234,25 @@ def _read_key(config: dict, key: Key, default: Any) -> Any:
     if key.kind == BOOL:
         # Only a real YAML boolean counts; "true" in quotes is a typo.
         return value if isinstance(value, bool) else default
+    if key.kind == LIST:
+        # Items that are neither plain names nor comments are dropped one by one.
+        if not isinstance(value, list):
+            return default
+        lines = (item.strip() for item in value if isinstance(item, str))
+        kept = (line for line in lines if is_comment(line) or valid_name(line))
+        return tuple(dict.fromkeys(kept))
     if not isinstance(value, str):
         return default
     return value.strip()
+
+
+def _migrated(config: dict) -> dict:
+    """`config` with an older version's `protect_git` switch read as a list."""
+    protection = _section(config.get("protection"))
+    old = protection.get("protect_git")
+    if "protected" in protection or not isinstance(old, bool):
+        return config
+    return {**config, "protection": {**protection, "protected": [".git"] if old else []}}
 
 
 def load_settings() -> tuple[Settings, str | None]:
@@ -211,6 +262,7 @@ def load_settings() -> tuple[Settings, str | None]:
     only that key.
     """
     config, error = read_config()
+    config = _migrated(config)
     fallback = Settings()
     values = {key.field: _read_key(config, key, getattr(fallback, key.field)) for key in KEYS}
     return Settings(**values), error
@@ -258,6 +310,28 @@ def folder_problems(settings: Settings) -> list[str]:
             problems.append("The share folder must not be inside the projects folder.")
         elif root.startswith(share.rstrip("/") + "/"):
             problems.append("The projects folder must not be inside the share folder.")
+    return problems
+
+
+def protected_problems(names: Iterable[str]) -> list[str]:
+    """Why each of `names` cannot be a protected name; [] if all of them can.
+
+    Comment lines are never a problem.
+    """
+    problems = []
+    for name in names:
+        if is_comment(name) or valid_name(name):
+            continue
+        if "/" in name:
+            problems.append(
+                f"{name} is a path. A protected name must be directly inside each "
+                "project, like .vscode: anything deeper could be got around by "
+                "renaming the folder above it."
+            )
+        elif name in (".", ".."):
+            problems.append(f"{name} is not a name that can be protected.")
+        else:
+            problems.append(f"{name[:40]}… is too long to be a file or folder name.")
     return problems
 
 

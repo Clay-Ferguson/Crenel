@@ -88,7 +88,7 @@ def test_busy_folders_offer_a_forced_retry(window, runner, dialogs):
 
 def applied_states(monkeypatch, states):
     """Make the refresh after Apply see `states`, as if the helper had made them."""
-    monkeypatch.setattr(window_module, "read_states", lambda root, share: states)
+    monkeypatch.setattr(window_module, "read_states", lambda root, share, protected: states)
 
 
 def test_a_successful_apply_is_confirmed(window, runner, dialogs, monkeypatch):
@@ -105,7 +105,7 @@ def test_a_successful_apply_is_confirmed(window, runner, dialogs, monkeypatch):
     title, text = dialogs[-1]
     assert title == "Crenel — Applied"
     assert text.startswith("All 2 changes were applied.")
-    assert "✓  ABC: now writable, git protected" in text
+    assert "✓  ABC: now writable, protected: .git" in text
     assert "✓  DEF: now read-only" in text
     assert "Last Apply: All 2 changes were applied." in window.status_text()
 
@@ -166,7 +166,7 @@ def test_hide_all(window, monkeypatch, projects):
         "ABC": FolderState("ABC", WRITE, (".git",), (".git",)),
         "DEF": FolderState("DEF", READ),
     }
-    monkeypatch.setattr(window_module, "read_states", lambda root, share: states)
+    monkeypatch.setattr(window_module, "read_states", lambda root, share, protected: states)
     window.refresh(ask=False)
     assert "2 shared (1 writable, 1 read-only)" in window.status_text()
     window.hide_all()
@@ -185,7 +185,7 @@ def test_refresh_asks_before_dropping_changes(window, dialogs):
 
 def test_a_conflict_row(window, monkeypatch):
     states = {"ABC": FolderState("ABC", CONFLICT, detail="mounted from elsewhere")}
-    monkeypatch.setattr(window_module, "read_states", lambda root, share: states)
+    monkeypatch.setattr(window_module, "read_states", lambda root, share, protected: states)
     window.refresh(ask=False)
     assert window.desired("ABC") is None
     assert not any(window.radio("ABC", m).isChecked() for m in (HIDDEN, READ, WRITE))
@@ -194,14 +194,24 @@ def test_a_conflict_row(window, monkeypatch):
     assert window.pending()  # choosing anything replaces what is there
 
 
-def test_git_protection_setting_marks_write_folders(window, monkeypatch, conf):
-    states = {"ABC": FolderState("ABC", WRITE, (), (".git",))}
-    monkeypatch.setattr(window_module, "read_states", lambda root, share: states)
-    window.refresh(ask=False)
-    assert [c.name for c in window.pending()] == ["ABC"]  # protection missing
-    conf(protect_git=False)
+def test_the_protected_names_mark_write_folders(window, monkeypatch, conf):
+    def read_states(_root, _share, protected):
+        found = tuple(n for n in (".envrc", ".git") if n in protected)
+        return {"ABC": FolderState("ABC", WRITE, (".git",), found)}
+
+    monkeypatch.setattr(window_module, "read_states", read_states)
     window.refresh(ask=False)
     assert window.pending() == []
+    assert "(read-only: .git)" in window.table.item(window._rows["ABC"], 0).toolTip()
+    conf(protected=(".git", ".envrc"))
+    window.refresh(ask=False)
+    assert [c.name for c in window.pending()] == ["ABC"]  # .envrc is missing
+    conf(protected=(".git", "# .envrc"))
+    window.refresh(ask=False)
+    assert window.pending() == []  # a commented name is not wanted
+    conf(protected=())
+    window.refresh(ask=False)
+    assert [c.name for c in window.pending()] == ["ABC"]  # .git is no longer wanted
 
 
 def test_show_commands(window):
@@ -235,7 +245,7 @@ def test_stray_items_block_sharing_but_not_hiding(window, runner, dialogs, monke
     with open(os.path.join(share, "notes.txt"), "w") as handle:
         handle.write("x")
     states = {"ABC": FolderState("ABC", WRITE), "DEF": FolderState("DEF", HIDDEN)}
-    monkeypatch.setattr(window_module, "read_states", lambda root, share: states)
+    monkeypatch.setattr(window_module, "read_states", lambda root, share, protected: states)
     window.refresh(ask=False)
     assert "⚠ 1 stray item in the share folder" in window.status_text()
     window.choose("DEF", READ)

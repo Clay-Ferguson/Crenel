@@ -72,8 +72,8 @@ def ask_vm(kind, path):
     vm.stdin.flush()
     return vm.stdout.readline().strip()
 
-def run(changes, force=False, protect=True):
-    request = {"protocol": 1, "root": root, "share": share, "protect_git": protect,
+def run(changes, force=False, protected=(".git",)):
+    request = {"protocol": 2, "root": root, "share": share, "protected": list(protected),
                "force": force, "changes": [{"name": n, "mode": m} for n, m in changes]}
     sys.stdin = io.TextIOWrapper(io.BytesIO(json.dumps(request).encode()))
     buffer = io.StringIO()
@@ -84,8 +84,8 @@ def run(changes, force=False, protect=True):
         sys.stdout = real
     reply = json.loads(buffer.getvalue())
     states = {
-        n: [s.mode, list(s.git_mounts)]
-        for n, s in shares.read_states(root, share).items()
+        n: [s.mode, list(s.protections)]
+        for n, s in shares.read_states(root, share, list(protected)).items()
     }
     return {"code": code, "reply": reply, "states": states}
 
@@ -208,15 +208,59 @@ def test_switching_modes_reaches_the_vm(projects):
     assert out[5] == [] and out[6] == []  # gone from the VM and the share folder
 
 
-def test_git_protection_can_be_turned_off(projects):
+def test_an_empty_list_protects_nothing(projects):
     root, share = projects
     out = drive(root, share, [
         ["apply", [["ABC", "write"]], {}],
-        ["apply", [["ABC", "write"]], {"protect": False}],
+        ["apply", [["ABC", "write"]], {"protected": []}],
         ["vm", "ABC/.git/config"],
     ])
     assert out[1]["states"]["ABC"] == ["write", []]
     assert out[2] is True
+
+
+def test_every_protected_name_is_read_only_in_the_vm(projects):
+    """Folders and files alike, and only what the project has."""
+    root, share = projects
+    os.mkdir(os.path.join(root, "ABC", ".vscode"))
+    for name in (".envrc", ".vscode/tasks.json"):
+        with open(os.path.join(root, "ABC", name), "w") as handle:
+            handle.write("x\n")
+    names = {"protected": [".git", ".envrc", ".vscode", "Makefile"]}
+    out = drive(root, share, [
+        ["apply", [["ABC", "write"]], names],
+        ["vm", "ABC/.envrc"],
+        ["vm", "ABC/.vscode/tasks.json"],
+        ["vm", "ABC/.git/config"],
+        ["vm_rename", "ABC/.envrc"],
+        ["vm_rename", "ABC/.vscode"],
+        ["vm", "ABC/new-file"],
+        ["vm", "ABC/Makefile"],  # not there when shared, so not protected
+        ["host", "ABC/.envrc"],
+        ["host", "ABC/.vscode/tasks.json"],
+        ["host_mounts"],
+    ])
+    assert out[0]["states"]["ABC"] == ["write", [".envrc", ".git", ".vscode"]]
+    assert out[1:8] == [False, False, False, False, False, True, True]
+    assert out[8:10] == [True, True]  # your own copies stay writable
+    assert out[10] == []
+
+
+def test_a_name_taken_off_the_list_is_a_change_not_a_conflict(projects):
+    root, share = projects
+    with open(os.path.join(root, "ABC", ".envrc"), "w") as handle:
+        handle.write("x\n")
+    out = drive(root, share, [
+        ["apply", [["ABC", "write"]], {"protected": [".git", ".envrc"]}],
+        ["apply", [], {"protected": [".git"]}],
+        ["apply", [["ABC", "write"]], {"protected": [".git"]}],
+        ["vm", "ABC/.envrc"],
+    ])
+    assert out[0]["states"]["ABC"] == ["write", [".envrc", ".git"]]
+    assert out[1]["states"]["ABC"] == ["write", [".envrc", ".git"]]
+    assert out[2]["reply"]["results"][0]["ok"]
+    assert out[2]["states"]["ABC"] == ["write", [".git"]]
+    assert out[3] is True
 
 
 def test_busy_then_forced(projects):

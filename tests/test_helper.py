@@ -19,6 +19,7 @@ from crenel.helper import (
     MS_REMOUNT,
     MS_STRICTATIME,
     RequestError,
+    _desired_exposure,
     caller_ids,
     exposure,
     open_nofollow,
@@ -33,10 +34,10 @@ UID = os.getuid()
 
 def request(root, share, **overrides):
     data = {
-        "protocol": 1,
+        "protocol": 2,
         "root": root,
         "share": share,
-        "protect_git": True,
+        "protected": [".git"],
         "force": False,
         "changes": [{"name": "ABC", "mode": "write"}],
     }
@@ -104,6 +105,19 @@ def test_refuses_bad_changes(folders):
     assert "JSON object" in refused([])
 
 
+def test_the_protected_names(folders):
+    root, share = folders
+    names = [".git", ".envrc", "My Notes"]
+    assert validate_request(request(root, share, protected=names), UID).protected == tuple(names)
+    assert validate_request(request(root, share, protected=[]), UID).protected == ()
+    assert "list" in refused(request(root, share, protected=".git"))
+    assert "list" in refused(request(root, share, protected=None))
+    assert "list" in refused(request(root, share, protected=["n"] * 65))
+    for bad in ("a/b", ".vscode/tasks.json", "/.git", "..", ".", "", 7):
+        assert "directly inside" in refused(request(root, share, protected=[".git", bad]))
+    assert "twice" in refused(request(root, share, protected=[".git", ".git"]))
+
+
 def test_caller_ids():
     assert caller_ids({"PKEXEC_UID": str(UID)})[0] == UID
     assert caller_ids({"SUDO_UID": str(UID)})[0] == UID
@@ -131,12 +145,16 @@ def test_remount_flags_keep_the_other_options():
 
 def test_exposure_ranks():
     git = (".git",)
-    assert exposure(FolderState("a", HIDDEN), True) == 0
-    assert exposure(FolderState("a", READ), True) == 1
-    assert exposure(FolderState("a", WRITE, git, git), True) == 2
-    assert exposure(FolderState("a", WRITE, (), git), True) == 3
-    assert exposure(FolderState("a", WRITE, (), git), False) == 2
-    assert exposure(FolderState("a", CONFLICT), True) == 4
+    both = (".envrc", ".git")
+    assert exposure(FolderState("a", HIDDEN)) == 0
+    assert exposure(FolderState("a", READ)) == 1
+    assert exposure(FolderState("a", WRITE, git, git)) == 2
+    assert exposure(FolderState("a", WRITE, both, git)) == 2
+    assert exposure(FolderState("a", WRITE, git, both)) == 3
+    assert exposure(FolderState("a", WRITE, (), git)) == 3
+    assert exposure(FolderState("a", WRITE)) == 2
+    assert exposure(FolderState("a", CONFLICT)) == 4
+    assert _desired_exposure(WRITE, git) == 2 and _desired_exposure(WRITE, ()) == 3
 
 
 def test_main_refuses_without_root(monkeypatch, capsys):

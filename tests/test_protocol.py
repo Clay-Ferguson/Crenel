@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 
+from crenel import helper
 from crenel.config import Settings
 from crenel.protocol import build_request, encode_request, parse_reply
 from crenel.shares import Change
@@ -11,10 +12,12 @@ from crenel.shares import Change
 
 def test_build_and_encode(projects):
     root, share = projects
-    settings = Settings(projects_root=root, share_dir=share, protect_git=False)
+    protected = (".git", "# off for now", ".envrc")
+    settings = Settings(projects_root=root, share_dir=share, protected=protected)
     request = build_request(settings, [Change("ABC", "read"), Change("\udcff", "write")], True)
     assert request["root"] == root and request["share"] == share
-    assert request["force"] is True and request["protect_git"] is False
+    assert request["force"] is True and request["protected"] == [".git", ".envrc"]
+    assert request["protocol"] == helper.PROTOCOL
     data = encode_request(request)
     assert data.isascii()
     assert json.loads(data)["changes"][1]["name"] == "\udcff"

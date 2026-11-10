@@ -21,7 +21,7 @@ from crenel.shares import (
     MountEntry,
     Step,
     classify,
-    git_targets,
+    find_targets,
     list_projects,
     needs_change,
     parse_mountinfo,
@@ -57,7 +57,8 @@ def differ(_a, _b):
 
 
 def targets(found=GIT):
-    return lambda _source: found
+    """A stand-in for `find_targets`: the project has `found`."""
+    return lambda _source, names: tuple(sorted(n for n in found if n in names))
 
 
 def test_unescape():
@@ -77,24 +78,28 @@ def test_list_projects_lists_real_folders_only(projects):
     assert list_projects(root + "/missing") == []
 
 
-def test_git_targets(projects):
+def test_find_targets(projects):
     root, _share = projects
-    assert git_targets(os.path.join(root, "ABC")) == GIT
-    assert git_targets(os.path.join(root, "DEF")) == ()
+    assert find_targets(os.path.join(root, "ABC"), GIT) == GIT
+    assert find_targets(os.path.join(root, "ABC"), ()) == ()
+    assert find_targets(os.path.join(root, "DEF"), GIT) == ()
 
 
-def test_git_targets_protects_a_git_file_but_never_a_symlink(tmp_path):
+def test_find_targets_takes_folders_and_files_but_never_a_symlink(tmp_path):
     (tmp_path / "wt").mkdir()
     (tmp_path / "wt" / ".git").write_text("gitdir: elsewhere\n")
-    assert git_targets(str(tmp_path / "wt")) == GIT
+    (tmp_path / "wt" / ".vscode").mkdir()
+    (tmp_path / "wt" / ".envrc").write_text("use nix\n")
+    names = (".vscode", ".git", "Makefile", ".envrc", ".git")
+    assert find_targets(str(tmp_path / "wt"), names) == (".envrc", ".git", ".vscode")
     (tmp_path / "linked").mkdir()
     os.symlink("/etc", tmp_path / "linked" / ".git")
-    assert git_targets(str(tmp_path / "linked")) == ()
+    assert find_targets(str(tmp_path / "linked"), GIT) == ()
 
 
-def classify_with(entries, is_same_dir=same, found=GIT):
+def classify_with(entries, is_same_dir=same, found=GIT, protected=GIT):
     return classify(
-        "ABC", ROOT, SHARE, entries, is_same_dir=is_same_dir, targets=targets(found)
+        "ABC", ROOT, SHARE, entries, protected, is_same_dir=is_same_dir, targets=targets(found)
     )
 
 
@@ -107,7 +112,7 @@ def test_classify_hidden_read_write():
             entry(SHARE + "/ABC/.git", ro=True),
         ]
     )
-    assert state.mode == WRITE and state.git_mounts == GIT
+    assert state.mode == WRITE and state.protections == GIT
 
 
 def test_a_sibling_with_a_longer_name_is_not_inside():
@@ -120,23 +125,40 @@ def test_classify_conflicts():
     assert classify_with([entry(SHARE + "/ABC/sub")]).mode == CONFLICT
     rw_git = [entry(SHARE + "/ABC"), entry(SHARE + "/ABC/.git")]
     assert classify_with(rw_git).mode == CONFLICT
-    # The old protections (hooks and config only) are not this one.
+    # Only names directly inside the project are protections, never deeper.
     old = [entry(SHARE + "/ABC"), entry(SHARE + "/ABC/.git/hooks", ro=True)]
     assert classify_with(old).mode == CONFLICT
 
 
-def test_needs_change_counts_git_protection():
+def test_a_protection_must_be_the_project_s_own():
+    """A read-only mount of something else is not a protection."""
+    sub = SHARE + "/ABC/.git"
+    foreign = [entry(SHARE + "/ABC"), entry(sub, ro=True)]
+    assert classify_with(foreign, is_same_dir=lambda a, _b: a != sub).mode == CONFLICT
+
+
+def test_a_protection_no_longer_listed_is_a_change_not_a_conflict():
+    shared = [entry(SHARE + "/ABC"), entry(SHARE + "/ABC/.envrc", ro=True)]
+    state = classify_with(shared, found=(".envrc", ".git"), protected=GIT)
+    assert state.mode == WRITE
+    assert state.protections == (".envrc",) and state.targets == GIT
+    assert needs_change(state, WRITE)
+
+
+def test_needs_change_counts_protections():
     write_bare = FolderState("ABC", WRITE, (), GIT)
-    assert needs_change(write_bare, WRITE, protect_git=True)
-    assert not needs_change(write_bare, WRITE, protect_git=False)
-    assert not needs_change(FolderState("ABC", WRITE, GIT, GIT), WRITE, protect_git=True)
-    assert needs_change(FolderState("ABC", READ), WRITE, protect_git=False)
-    assert not needs_change(FolderState("ABC", HIDDEN), HIDDEN, protect_git=True)
+    assert needs_change(write_bare, WRITE)
+    assert not needs_change(FolderState("ABC", WRITE), WRITE)
+    assert not needs_change(FolderState("ABC", WRITE, GIT, GIT), WRITE)
+    assert needs_change(FolderState("ABC", WRITE, GIT), WRITE)  # taken off the list
+    assert needs_change(FolderState("ABC", READ), WRITE)
+    assert not needs_change(FolderState("ABC", HIDDEN, targets=GIT), HIDDEN)
+    assert not needs_change(FolderState("ABC", READ, targets=GIT), READ)
 
 
-def plan(mode, entries, protect=True, found=GIT, is_same_dir=same):
+def plan(mode, entries, protected=GIT, found=GIT, is_same_dir=same):
     return plan_folder(
-        Change("ABC", mode), ROOT, SHARE, protect, entries,
+        Change("ABC", mode), ROOT, SHARE, protected, entries,
         stage=STAGE, is_same_dir=is_same_dir, targets=targets(found),
     ).steps
 
@@ -156,7 +178,7 @@ def test_hidden_to_read_is_built_read_only_then_moved_in():
     ]
 
 
-def test_hidden_to_write_gets_its_git_protection_before_it_is_moved_in():
+def test_hidden_to_write_gets_its_protections_before_it_is_moved_in():
     assert plan(WRITE, []) == [
         Step(BIND, S, SRC),
         Step(PRIVATE, S),
@@ -167,10 +189,21 @@ def test_hidden_to_write_gets_its_git_protection_before_it_is_moved_in():
     ]
 
 
-def test_write_without_git_protection():
+def test_write_protects_every_listed_name_the_project_has():
+    steps = plan(WRITE, [], protected=(".git", ".envrc", "Makefile"), found=(".envrc", ".git"))
+    assert steps[2:6] == [
+        Step(BIND, S + "/.envrc", S + "/.envrc"),
+        Step(READONLY, S + "/.envrc"),
+        Step(BIND, S + "/.git", S + "/.git"),
+        Step(READONLY, S + "/.git"),
+    ]
+    assert steps[6:] == [Step(MKDIR, D), Step(MOVE, D, S)]
+
+
+def test_write_without_protections():
     expected = [Step(BIND, S, SRC), Step(PRIVATE, S), Step(MKDIR, D), Step(MOVE, D, S)]
     assert plan(WRITE, [], found=()) == expected
-    assert plan(WRITE, [], protect=False) == expected
+    assert plan(WRITE, [], protected=()) == expected
 
 
 def test_nothing_is_ever_changed_in_place():
@@ -178,7 +211,7 @@ def test_nothing_is_ever_changed_in_place():
     change to a share takes it down and builds it again."""
     shared = [entry(D), entry(D + "/.git", ro=True)]
     for mode in (READ, WRITE):
-        steps = plan(mode, shared, protect=mode == READ)
+        steps = plan(mode, shared, protected=GIT if mode == READ else ())
         assert steps[:2] == [Step(UMOUNT, D + "/.git"), Step(UMOUNT, D)]
         assert steps[-1] == Step(MOVE, D, S)
     assert not [s for s in plan(WRITE, [entry(D, ro=True)]) if s.path == D and s.kind == READONLY]

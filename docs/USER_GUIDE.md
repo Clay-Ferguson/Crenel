@@ -13,7 +13,7 @@ It is built for running AI agents in a QEMU/KVM VM: you give the agent the proje
 - [How it works](#how-it-works)
 - [One-time VM setup](#one-time-vm-setup)
 - [Using Crenel](#using-crenel)
-- [Git protection](#git-protection)
+- [Protected names](#protected-names)
 - [Folders in use](#folders-in-use)
 - [How each share is built](#how-each-share-is-built)
 - [The password prompt](#the-password-prompt)
@@ -77,23 +77,41 @@ The buttons under the list:
 - **Hide All**: marks every project Hidden. Press Apply to carry it out.
 - **Apply**: make the marked changes.
 
-When Apply finishes, a summary says how it went: *All 3 changes were applied.* followed by one line per project with what the VM can see of it now (✓ ABC: now writable, git protected). The summary is written from the mount table read back afterwards, not from what was asked for. If anything failed, the summary is a warning instead: it opens with something like *2 of 3 changes applied.* and has a ✗ line saying why for each failure.
+When Apply finishes, a summary says how it went: *All 3 changes were applied.* followed by one line per project with what the VM can see of it now (✓ ABC: now writable, protected: .git). The summary is written from the mount table read back afterwards, not from what was asked for. If anything failed, the summary is a warning instead: it opens with something like *2 of 3 changes applied.* and has a ✗ line saying why for each failure.
 
 The status bar counts the projects, how many are shared (writable and read-only), and how many changes are still waiting for Apply. After an Apply it also repeats the summary's first line, until the next Apply or Refresh. Hover over a project's name to see its current state and what Apply will change it to.
 
 Changing an already-shared project, say from Write to Read, takes the share down and puts it back up the new way. A read-only setting changed in place would only reach the host's side and never the VM's (see [How each share is built](#how-each-share-is-built)). So the project is briefly unmounted, which needs it not to be in use (see [Folders in use](#folders-in-use)).
 
-## Git protection
+## Protected names
 
-A project shared Write is writable from inside the VM, and that includes its `.git` folder. An agent (or anything that compromised it) could plant a git hook, a script that runs **on the host** the next time you commit there. There are many ways to do that: a file in `.git/hooks`, `core.hooksPath` in `.git/config`, a `.git/commondir` file, a submodule's hooks, or simply renaming `.git` and putting a new one of its own in its place.
+A project shared Write is writable from inside the VM, all of it. Sometimes you want an agent to be able to change everything in a project *except* a few things. The **protected names** list in Options ▸ Settings is for that: one name per line, `.git` by default.
 
-With git protection on (the default), Crenel makes the whole `.git` read-only inside the VM for projects shared Write, and mounts it in its own right, so it cannot be renamed, removed or replaced either. That closes all of the above at once. Git in the VM can still read (`git status`, `git log`, `git diff`), but anything that writes to `.git` fails there: commits, branches, fetches, pulls, `git config`. Do those on the host.
+Every folder or file on the list that is directly inside a project shared Write is made read-only inside the VM. Crenel mounts each one in its own right, so the VM cannot change, rename, remove or replace it either. The list is one list for every project, and it applies only to projects shared Write (Read already makes everything read-only).
 
-A `.git` that is a file (a worktree or a submodule) is protected the same way, so its `gitdir:` line cannot be pointed somewhere else. A project with no `.git` has nothing to protect, and neither does one whose `.git` is a symlink, which Crenel never follows.
+- A name can be a folder (`.vscode`) or a file (`.envrc`). Everything inside a listed folder is protected.
+- Only what a project has when it is shared is protected. If `Makefile` is on the list but a project has none, the agent can create one. Apply the project again after adding the file on the host.
+- A symlink is never followed, so a listed name that is a symlink is left alone.
+- Names only, never paths: `.vscode`, not `.vscode/tasks.json`. Settings refuses a line with a `/` in it. A deeper path could be got around: the agent would rename the folder above it, which stays writable, and put a new one of its own in its place.
+- A line starting with `#` is a comment: it is kept in the list but ignored. Use it to turn a name off for a while without losing it (`# .envrc`), or to leave yourself a note. This means a name that really starts with `#` cannot be protected.
 
-The protection covers only the VM's view. Your own `.git` on the host stays fully writable.
+The protection covers only the VM's view. Your own copies on the host stay fully writable.
 
-Turning the setting on or off marks every project currently shared Write as changed. Press Apply to update them.
+Changing the list marks every project currently shared Write that it affects as changed. Press Apply to update them.
+
+### Example: everything except git
+
+Put `.git` on the list (it is there by default) when you want your coding agents to be able to do everything in a project except write to git.
+
+Without it, an agent (or anything that compromised it) could plant a git hook, a script that runs **on the host** the next time you commit there. There are many ways to do that: a file in `.git/hooks`, `core.hooksPath` in `.git/config`, a `.git/commondir` file, a submodule's hooks, or simply renaming `.git` and putting a new one of its own in its place. A read-only `.git` that cannot be renamed or replaced closes all of these at once.
+
+Git in the VM can still read (`git status`, `git log`, `git diff`), but anything that writes to `.git` fails there: commits, branches, fetches, pulls, `git config`. Do those on the host.
+
+A `.git` that is a file (a worktree or a submodule) is protected the same way, so its `gitdir:` line cannot be pointed somewhere else.
+
+### Other names worth listing
+
+Anything in a project that *runs on the host* is worth considering: `.envrc` (direnv runs it when you `cd` in), `.vscode` (its `tasks.json` and settings), `Makefile`, `package.json` (its scripts). The agent can then still read them but not change them.
 
 ## Folders in use
 
@@ -108,12 +126,12 @@ This applies to every change to a shared project, not only to hiding it, because
 Linux keeps a separate copy of the share folder for the VM, and the kernel copies each new mount into it at the moment the mount arrives. Two things follow from that:
 
 - A share made read-only *after* it arrives would stay writable in the VM's copy.
-- A plain bind mount stays *linked* to the project folder it came from. Anything later mounted inside the share, such as the git protection, would be copied back onto your real project, making its `.git` read-only on the host.
+- A plain bind mount stays *linked* to the project folder it came from. Anything later mounted inside the share, such as a protected name, would be copied back onto your real project, making its `.git` read-only on the host.
 
 So Crenel builds every share off to the side first, in a private, empty scratch spot (`/run/crenel-stage`, which only root can enter and which exists only during an Apply):
 
 1. It mounts the project there and cuts the link back to the original folder.
-2. It makes the share read-only, or adds the git protection.
+2. It makes the share read-only, or adds the protected names.
 3. It moves the finished share into the share folder in one step.
 
 The VM's copy arrives complete, and nothing is ever mounted on your real project. Nothing is copied either: the scratch spot holds a doorway to the project, not its files.
@@ -139,13 +157,13 @@ Options ▸ Settings:
 
 - **Projects folder**: the folder whose subfolders are listed.
 - **VM share folder**: the folder the VM's virtiofs share points at. Crenel creates it if it is missing. It must not be inside the projects folder, or contain it, and must hold nothing but empty folders and Crenel's own shares (see [How it works](#how-it-works)).
-- **Git protection**: see [Git protection](#git-protection).
+- **Read-only in projects shared Write**: the protected names, one per line. See [Protected names](#protected-names).
 
 The settings are kept in a YAML file. See [CONFIG.md](CONFIG.md).
 
 ## What Crenel does not protect
 
-- **Projects you share Write.** The agent can change anything in them apart from `.git`. Be careful with anything else in a writable project that runs on the host: build scripts, `package.json` scripts, a `Makefile`, `.envrc` (direnv), `.vscode/tasks.json`. Review changes before running them on the host, or run them inside the VM.
+- **Projects you share Write.** The agent can change anything in them apart from what is on the [protected names](#protected-names) list. Be careful with anything else in a writable project that runs on the host: build scripts, `package.json` scripts, a `Makefile`, `.envrc` (direnv), `.vscode/tasks.json`. List the ones you can, review changes before running them on the host, or run them inside the VM.
 - **Root in the VM.** libvirt normally runs virtiofsd as root, and passes file ownership straight through, so root inside the VM can create root-owned *setuid* programs in a Write project, or in the share folder itself (which the VM can always write to). Run on the host, such a program runs as root, not as you. Mounting the filesystem that holds your projects with `nosuid`, or running virtiofsd unprivileged or with an ID map (see libvirt's virtiofs documentation), closes this.
 - **Open files after a detach.** See [Folders in use](#folders-in-use).
 - **Whatever else the VM shares.** Crenel manages only the share folder. Any other `<filesystem>` in the VM's configuration still shares what it shares.

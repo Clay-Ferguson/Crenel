@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from .config import Settings
 from .shares import Change
 
-PROTOCOL = 1
+PROTOCOL = 2
 
 # pkexec's own exit codes: the password dialog was dismissed, or polkit said
 # no (or pkexec could not run the program at all).
@@ -27,7 +27,7 @@ def build_request(settings: Settings, changes: Iterable[Change], force: bool = F
         "protocol": PROTOCOL,
         "root": settings.root_path,
         "share": settings.share_path,
-        "protect_git": settings.protect_git,
+        "protected": list(settings.protected_names),
         "force": force,
         "changes": [{"name": c.name, "mode": c.mode} for c in changes],
     }
