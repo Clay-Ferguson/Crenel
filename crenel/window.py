@@ -38,7 +38,13 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from windowchrome import apply_frame, apply_radios, apply_scrollbars, close_markdown_windows
+from windowchrome import (
+    apply_frame,
+    apply_menus,
+    apply_radios,
+    apply_scrollbars,
+    close_markdown_windows,
+)
 
 from . import APP_NAME, messages
 from .config import Settings, ensure_share_dir, folder_problems, load_settings
@@ -73,7 +79,6 @@ from .style import (
     SCROLLBAR_HANDLE,
     SECONDARY_BUTTON_BG,
     action_button,
-    menu_style,
     mono_font,
     table_style,
 )
@@ -234,7 +239,7 @@ class MainWindow(QMainWindow):
 
     def _build_menus(self) -> None:
         bar = self.menuBar()
-        bar.setStyleSheet(menu_style())
+        apply_menus(bar)
 
         file_menu = bar.addMenu("&File")
         refresh_action = QAction("&Refresh", self)

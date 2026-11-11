@@ -11,6 +11,7 @@ from __future__ import annotations
 from PyQt6.QtCore import QSize
 from PyQt6.QtGui import QColor, QFont, QFontDatabase, QPalette
 from PyQt6.QtWidgets import QApplication, QPushButton
+from windowchrome import DIVIDER_BORDER
 
 from . import UI_POINT_SIZE
 
@@ -44,10 +45,6 @@ CONTROL_BAR_PADDING = "5px 16px"
 
 # The widest label on a uniform button, which sets the size the others match.
 ACTION_BUTTON_TEXT = "Cancel"
-
-MENU_BAR_ITEM_PADDING = "8px 16px"
-MENU_ITEM_PADDING = "10px 32px"
-MENU_BORDER = "1px solid #9a9a9a"
 
 # The scroll bars' handle: the GTK theme's handle gray, as in Start Menu,
 # so the bars match the GTK apps beside this one (windowchrome README §9).
@@ -139,37 +136,13 @@ def table_style() -> str:
     """
 
 
-def menu_style() -> str:
-    """Qt stylesheet for the menu bar and its drop-downs: bigger targets, an edge."""
-    body = QApplication.palette().color(QPalette.ColorRole.Window).name()
-    return f"""
-        QMenuBar::item {{
-            padding: {MENU_BAR_ITEM_PADDING};
-            background: transparent;
-        }}
-        QMenuBar::item:selected, QMenuBar::item:pressed {{
-            background: palette(highlight);
-            color: palette(highlighted-text);
-        }}
-        QMenu {{
-            padding: 6px;
-            background: {body};
-            border: {MENU_BORDER};
-        }}
-        QMenu::item {{ padding: {MENU_ITEM_PADDING}; }}
-        QMenu::item:selected {{
-            background: palette(highlight);
-            color: palette(highlighted-text);
-        }}
-    """
-
-
 # The status bar while the helper is running: DupFinder's busy green.
 STATUS_BUSY_BG = "#3f6b39"
 STATUS_BUSY_FG = "#f0f2ef"
 # Contents margins, not a stylesheet padding, which a QStatusBar ignores.
 STATUS_BAR_MARGINS = (10, 6, 10, 6)
-STATUS_BAR_BORDER = "1px solid #9a9a9a"
+# windowchrome's divider gray, the one its menus are drawn with (README §14).
+STATUS_BAR_BORDER = DIVIDER_BORDER
 
 
 def status_style(busy: bool) -> str:

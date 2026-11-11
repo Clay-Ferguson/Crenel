@@ -12,7 +12,7 @@ The checkout directory is `access-controller`; the app, package and everything i
 ./start.sh
 ```
 
-uv-run, `package = false`, no install step. `windowchrome` is a sibling checkout (`../windowchrome`, editable), as in DupFinder, which is the pattern for everything here (scripts, config design, settings dialog, help, packaging). From it Crenel takes the help viewer, the radio buttons, the wide scroll bars (always with `handle=style.SCROLLBAR_HANDLE`, the GTK handle gray, §9) and the window frame (`apply_frame()`, §13). Installed from the `.deb` it runs `/usr/lib/crenel` under `python3 -I`. See `packaging/build-deb.sh`.
+uv-run, `package = false`, no install step. `windowchrome` is a sibling checkout (`../windowchrome`, editable), as in DupFinder, which is the pattern for everything here (scripts, config design, settings dialog, help, packaging). From it Crenel takes the help viewer, the radio buttons, the wide scroll bars (always with `handle=style.SCROLLBAR_HANDLE`, the GTK handle gray, §9), the window frame (`apply_frame()`, §13) and the menus (`apply_menus(bar)` with no arguments, §14: the gray edges and roomy items in the palette's highlight; `style.STATUS_BAR_BORDER` is windowchrome's `DIVIDER_BORDER`, the same gray). There is no menu stylesheet in `style.py`, and there should not be one again: a menu look that needs changing is changed in windowchrome. Installed from the `.deb` it runs `/usr/lib/crenel` under `python3 -I`. See `packaging/build-deb.sh`.
 
 ## Layout
 
