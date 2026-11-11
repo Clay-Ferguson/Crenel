@@ -10,10 +10,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from PyQt6.QtWidgets import QWidget
-from windowchrome import MarkdownDialog, apply_scrollbars, show_markdown
+from windowchrome import MarkdownDialog, apply_frame, apply_scrollbars, show_markdown
 
 from . import APP_NAME
-from .style import action_button
+from .style import SCROLLBAR_HANDLE, action_button
 
 # `docs/` sits beside the package. `packaging/build-deb.sh` installs the whole
 # tree into /usr/lib/crenel beside the package for this reason.
@@ -27,7 +27,10 @@ def _open(name: str, title: str, parent: QWidget | None) -> MarkdownDialog:
         title=f"{APP_NAME} — {title}",
         button_factory=lambda text: action_button(text, uniform=True),
     )
-    apply_scrollbars(dialog.view)
+    # show_markdown() shows the dialog before returning it; apply_frame()
+    # re-shows it framed, and hands back the frame of one already open.
+    apply_frame(dialog)
+    apply_scrollbars(dialog.view, handle=SCROLLBAR_HANDLE)
     return dialog
 
 

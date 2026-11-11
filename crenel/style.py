@@ -49,6 +49,10 @@ MENU_BAR_ITEM_PADDING = "8px 16px"
 MENU_ITEM_PADDING = "10px 32px"
 MENU_BORDER = "1px solid #9a9a9a"
 
+# The scroll bars' handle: the GTK theme's handle gray, as in Start Menu,
+# so the bars match the GTK apps beside this one (windowchrome README §9).
+SCROLLBAR_HANDLE = "#777777"
+
 # Room around each row of the folder list. Rows are tall anyway (they hold
 # radio buttons), so this mostly keeps the names off the pane's left edge.
 TABLE_ITEM_PADDING = "4px 10px"

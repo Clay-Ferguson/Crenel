@@ -12,7 +12,7 @@ The checkout directory is `access-controller`; the app, package and everything i
 ./start.sh
 ```
 
-uv-run, `package = false`, no install step. `windowchrome` is a sibling checkout (`../windowchrome`, editable), as in DupFinder, which is the pattern for everything here (scripts, config design, settings dialog, help, packaging). Installed from the `.deb` it runs `/usr/lib/crenel` under `python3 -I`. See `packaging/build-deb.sh`.
+uv-run, `package = false`, no install step. `windowchrome` is a sibling checkout (`../windowchrome`, editable), as in DupFinder, which is the pattern for everything here (scripts, config design, settings dialog, help, packaging). From it Crenel takes the help viewer, the radio buttons, the wide scroll bars (always with `handle=style.SCROLLBAR_HANDLE`, the GTK handle gray, §9) and the window frame (`apply_frame()`, §13). Installed from the `.deb` it runs `/usr/lib/crenel` under `python3 -I`. See `packaging/build-deb.sh`.
 
 ## Layout
 
@@ -23,6 +23,7 @@ uv-run, `package = false`, no install step. `windowchrome` is a sibling checkout
 - `config.py`: the YAML config, using DupFinder's `KEYS` design: `projects_root`, `share_dir`, `protected` (a list of names; an old `protect_git` bool is migrated). `Settings.root_path`/`share_path` give real paths. Also `folder_problems`, `protected_problems`, `ensure_share_dir`.
 - `window.py`: `MainWindow`. A `QTableWidget` with one row per project and a `QButtonGroup` of three radios per row. `_desired` holds the choices (None for an untouched conflict row) and `pending()` diffs them against `_states`. The control bar has Refresh, Show Commands, Hide All and Apply. Busy folders are re-marked after Apply and offered a forced (lazy) retry.
 - `settings.py`: Options ▸ Settings: two folder fields with browse buttons, and the protected names text area (one name per line).
+- `messages.py`: framed drop-ins for `QMessageBox.critical/warning/information/question`, same arguments and return value. Call them as `messages.warning(...)`, through the module: `tests/conftest.py` replaces them there.
 - `statusbar.py`, `style.py`, `help.py`, `__main__.py`: DupFinder's, adapted.
 
 ## Rules
@@ -33,9 +34,9 @@ uv-run, `package = false`, no install step. `windowchrome` is a sibling checkout
 - **Every share is built in the scratch spot and moved in complete.** The host's `/` is a shared mount and virtiofsd holds a slave copy of the share folder. A mount's copy in the VM is made when it arrives, with the flags it has *then*, and remounts never propagate. A plain bind also stays in `/`'s peer group, so anything mounted inside it is mirrored onto the real project. So `plan_folder` binds into `shares.STAGE_DIR` (a private tmpfs the helper creates and removes per Apply), makes it private, adds read-only and the protected names, then `MS_MOVE`s it into the share folder. Any change to an existing share is a full re-share, never an in-place remount. `test_helper_namespace.py` checks all of this with `/` made rshared and a slave "VM view" namespace. Never test mount behavior without both.
 - **The share folder holds only** Crenel's mounts and empty folders (`shares.stray_entries`), because the VM sees all of it. Settings refuses to save one with anything else in it, and the window refuses Apply for anything but Hidden while strays are there.
 - **No shells** anywhere (guarded), and **every button comes from `style.action_button()`** (guarded).
-- **Only widget modules import Qt** (`window`, `settings`, `privilege`, `statusbar`, `style`, `help`, `__main__`). The `.deb` smoke test imports the others without Qt.
+- **Only widget modules import Qt** (`window`, `settings`, `messages`, `privilege`, `statusbar`, `style`, `help`, `__main__`). The `.deb` smoke test imports the others without Qt.
 - **Config loading must never raise.** Saving rewrites the whole file via temp file plus `os.replace`.
-- **Do not style the title bar**, keep the window title just "Crenel", and do not restyle the rendered help.
+- **Every window Crenel opens is in windowchrome's frame** (README §13 there): one `apply_frame()` per window, before it is first shown (for the User Guide, on the dialog `show_markdown()` returns). Message boxes go through `crenel.messages`, never `QMessageBox`'s statics (guarded). The folder picker stays GNOME's native one, unframed: never `DontUseNativeDialog`. The frame owns each framed window's contents margins, so margins go on its layout; an initial `resize()` adds `frame.title_bar.height()` to the height. Do not draw any other title bar, keep the window title just "Crenel", and do not restyle the rendered help.
 - **`docs/` is runtime content** shipped in the `.deb`; `tests/test_help.py` checks every link and anchor.
 - Do not commit to git, or offer to. Only the human developer commits. Never add a dependency without asking.
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 
 from PyQt6.QtWidgets import QLabel, QPlainTextEdit
+from windowchrome import WindowFrame
 
 from crenel import config
 from crenel.config import load_settings
@@ -108,3 +109,9 @@ def test_a_share_folder_with_strays_is_refused(qtbot, conf, projects, dialogs):
     assert dialog.result() != dialog.DialogCode.Accepted
     assert "notes.txt" in dialogs[-1][1] and "left-over" not in dialogs[-1][1]
     assert load_settings()[0].protected == ()  # the refused save wrote nothing
+
+
+def test_the_dialog_is_framed_with_a_close_button_only(qtbot, conf):
+    dialog = make(qtbot)
+    frame = dialog.findChild(WindowFrame)
+    assert frame is not None and frame.title_bar.buttons == [frame.title_bar.close_button]

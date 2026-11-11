@@ -38,9 +38,9 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from windowchrome import apply_radios, apply_scrollbars, close_markdown_windows
+from windowchrome import apply_frame, apply_radios, apply_scrollbars, close_markdown_windows
 
-from . import APP_NAME
+from . import APP_NAME, messages
 from .config import Settings, ensure_share_dir, folder_problems, load_settings
 from .help import show_user_guide
 from .privilege import HelperRunner
@@ -70,6 +70,7 @@ from .style import (
     DANGER_BUTTON_BG,
     PENDING_FG,
     PRIMARY_BUTTON_BG,
+    SCROLLBAR_HANDLE,
     SECONDARY_BUTTON_BG,
     action_button,
     menu_style,
@@ -122,13 +123,14 @@ class CommandsDialog(QDialog):
     def __init__(self, text: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle(f"{APP_NAME} — Commands")
-        self.resize(900, 420)
+        frame = apply_frame(self)
+        self.resize(900, 420 + frame.title_bar.height())
         layout = QVBoxLayout(self)
         self.view = QPlainTextEdit(text)
         self.view.setReadOnly(True)
         self.view.setFont(mono_font())
         self.view.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
-        apply_scrollbars(self.view)
+        apply_scrollbars(self.view, handle=SCROLLBAR_HANDLE)
         layout.addWidget(self.view, 1)
         close = action_button("Close", SECONDARY_BUTTON_BG, uniform=True)
         close.clicked.connect(self.accept)
@@ -142,7 +144,8 @@ class MainWindow(QMainWindow):
     def __init__(self, runner: HelperRunner | None = None) -> None:
         super().__init__()
         self.setWindowTitle(APP_NAME)
-        self.resize(820, 640)
+        frame = apply_frame(self)
+        self.resize(820, 640 + frame.title_bar.height())
 
         # The runner is a parameter so tests can hand in a fake one: the real
         # one starts pkexec.
@@ -196,7 +199,7 @@ class MainWindow(QMainWindow):
         self.table.horizontalHeaderItem(COL_NAME).setTextAlignment(
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
         )
-        apply_scrollbars(self.table)
+        apply_scrollbars(self.table, handle=SCROLLBAR_HANDLE)
         layout.addWidget(self.table, 1)
 
         self.refresh_button = action_button("Refresh", SECONDARY_BUTTON_BG, CONTROL_BAR_PADDING)
@@ -277,7 +280,7 @@ class MainWindow(QMainWindow):
             return False
         pending = self.pending()
         if ask and pending:
-            answer = QMessageBox.question(
+            answer = messages.question(
                 self,
                 f"{APP_NAME} — Refresh",
                 f"Discard {plural(len(pending), 'change')} not yet applied?",
@@ -545,7 +548,7 @@ class MainWindow(QMainWindow):
             if stray:
                 self._stray = stray
                 self._update()
-                QMessageBox.warning(
+                messages.warning(
                     self,
                     f"{APP_NAME} — share folder not empty",
                     stray_text(share, stray) + "\n\nHiding projects still works.",
@@ -558,7 +561,7 @@ class MainWindow(QMainWindow):
         error = self.runner.start(request)
         if error:
             self._applying = {}
-            QMessageBox.warning(self, APP_NAME, error)
+            messages.warning(self, APP_NAME, error)
             return
         if self.runner.running:
             self._status.set_status(
@@ -612,7 +615,7 @@ class MainWindow(QMainWindow):
         self._status.set_status("", busy=False)
         if reply.error:
             self.refresh(ask=False, keep=requested)
-            QMessageBox.warning(self, f"{APP_NAME} — Apply", reply.error)
+            messages.warning(self, f"{APP_NAME} — Apply", reply.error)
             return
         busy = {name: requested[name] for name in reply.busy if name in requested}
         self.refresh(ask=False, keep=busy)
@@ -623,12 +626,12 @@ class MainWindow(QMainWindow):
             self._last_result = text.split("\n", 1)[0]
             self._update()
             if reply.failures:
-                QMessageBox.warning(self, f"{APP_NAME} — Apply", text)
+                messages.warning(self, f"{APP_NAME} — Apply", text)
             else:
-                QMessageBox.information(self, f"{APP_NAME} — Applied", text)
+                messages.information(self, f"{APP_NAME} — Applied", text)
         if busy:
             listed = "\n".join(printable(name) for name in busy)
-            answer = QMessageBox.question(
+            answer = messages.question(
                 self,
                 f"{APP_NAME} — folders in use",
                 f"These folders are in use, probably by something running in the VM:"

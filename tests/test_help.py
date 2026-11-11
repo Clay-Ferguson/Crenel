@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 
 import pytest
-from windowchrome import heading_slugs
+from windowchrome import WindowFrame, heading_slugs
 from windowchrome.markdowndialog import _WINDOWS, close_markdown_windows
 
 from crenel.help import DOCS_DIR
@@ -73,6 +73,7 @@ def test_user_guide_opens_and_closes_with_the_window(window):
     assert len(_WINDOWS) == 1
     dialog = next(iter(_WINDOWS.values()))
     assert dialog.windowTitle() == "Crenel — User Guide"
+    assert dialog.findChild(WindowFrame) is not None
     assert "One-time VM setup" in dialog.view.document().toPlainText()
     window.close()
     assert _WINDOWS == {}

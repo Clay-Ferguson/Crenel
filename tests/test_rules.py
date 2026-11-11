@@ -51,6 +51,17 @@ def test_every_button_comes_from_style(path):
 
 
 @pytest.mark.parametrize("path", SOURCES, ids=lambda p: p.name)
+def test_message_boxes_go_through_messages(path):
+    """The static QMessageBox calls run a box there is no way to frame."""
+    statics = ("critical", "warning", "information", "question", "about")
+    used = [
+        call.lineno for call in _calls(path)
+        if _name(call.func) in {f"QMessageBox.{name}" for name in statics}
+    ]
+    assert used == [], f"QMessageBox static at {path.name} lines {used}: use crenel.messages"
+
+
+@pytest.mark.parametrize("path", SOURCES, ids=lambda p: p.name)
 def test_nothing_runs_through_a_shell(path):
     offenders = []
     for call in _calls(path):

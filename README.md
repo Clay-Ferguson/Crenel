@@ -32,7 +32,7 @@ Linux with `pkexec`, and a VM sharing a host folder over virtiofs (libvirt/virt-
 
 Running from this checkout needs `uv` (see [uv's install page](https://docs.astral.sh/uv/)); it pulls in PyQt6 and PyYAML on first run. The `.deb` uses the distribution's `python3-pyqt6` and `python3-yaml` instead.
 
-The wide scroll bars, radio buttons, check boxes and help window come from **[windowchrome](https://github.com/Clay-Ferguson/windowchrome)**, which is not on PyPI and must be checked out beside this folder:
+The title bar and window frame, the wide scroll bars, radio buttons, check boxes and help window come from **[windowchrome](https://github.com/Clay-Ferguson/windowchrome)**, which is not on PyPI and must be checked out beside this folder:
 
 ```bash
 cd ..

@@ -7,9 +7,9 @@ import sys
 import traceback
 
 from PyQt6.QtCore import QTimer
-from PyQt6.QtWidgets import QApplication, QMessageBox
+from PyQt6.QtWidgets import QApplication
 
-from . import APP_NAME, UI_POINT_SIZE
+from . import APP_NAME, UI_POINT_SIZE, messages
 from .config import ensure_config
 from .style import tune_palette
 from .window import MainWindow
@@ -30,7 +30,7 @@ def _report_unhandled(kind, value, trace) -> None:
     if QApplication.instance() is None:
         return
     tail = "\n".join(text.rstrip().splitlines()[-TRACEBACK_LINES:])
-    QMessageBox.critical(
+    messages.critical(
         None,
         f"{APP_NAME} — internal error",
         f"Something went wrong inside {APP_NAME}. The window should still work.\n\n{tail}",

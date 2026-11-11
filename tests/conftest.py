@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from PyQt6.QtCore import QObject, pyqtSignal  # noqa: E402
 from PyQt6.QtWidgets import QMessageBox  # noqa: E402
 
-from crenel import config  # noqa: E402
+from crenel import config, messages  # noqa: E402
 from crenel.protocol import HelperReply  # noqa: E402
 
 
@@ -71,7 +71,7 @@ class _Dialogs(list):
 
 @pytest.fixture(autouse=True)
 def dialogs(monkeypatch):
-    """Catch every QMessageBox instead of showing it (one would hang offscreen).
+    """Catch every message box instead of showing it (one would hang offscreen).
 
     A `question` is answered with `shown.answer`: No unless a test says Yes.
     """
@@ -85,10 +85,10 @@ def dialogs(monkeypatch):
         shown.append((title, message))
         return shown.answer
 
-    monkeypatch.setattr(QMessageBox, "warning", staticmethod(capture))
-    monkeypatch.setattr(QMessageBox, "critical", staticmethod(capture))
-    monkeypatch.setattr(QMessageBox, "information", staticmethod(capture))
-    monkeypatch.setattr(QMessageBox, "question", staticmethod(ask))
+    monkeypatch.setattr(messages, "warning", capture)
+    monkeypatch.setattr(messages, "critical", capture)
+    monkeypatch.setattr(messages, "information", capture)
+    monkeypatch.setattr(messages, "question", ask)
     return shown
 
 

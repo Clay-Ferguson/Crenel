@@ -77,6 +77,8 @@ The buttons under the list:
 - **Hide All**: marks every project Hidden. Press Apply to carry it out.
 - **Apply**: make the marked changes.
 
+Crenel draws its own title bar, in navy, so the window stands out on a dark desktop. It dims while another window has focus. Drag it to move the window, double-click it to maximize or restore, and drag any edge or corner to resize. Dialogs and messages have a close button only. Alt+Space opens GNOME's window menu, for Always on Top and the rest. The folder picker in Settings is GNOME's own and keeps the system's title bar.
+
 When Apply finishes, a summary says how it went: *All 3 changes were applied.* followed by one line per project with what the VM can see of it now (✓ ABC: now writable, protected: .git). The summary is written from the mount table read back afterwards, not from what was asked for. If anything failed, the summary is a warning instead: it opens with something like *2 of 3 changes applied.* and has a ✗ line saying why for each failure.
 
 The status bar counts the projects, how many are shared (writable and read-only), and how many changes are still waiting for Apply. After an Apply it also repeats the summary's first line, until the next Apply or Refresh. Hover over a project's name to see its current state and what Apply will change it to.

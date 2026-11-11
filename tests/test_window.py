@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 
 from PyQt6.QtWidgets import QMessageBox
+from windowchrome import WindowFrame
 
 from crenel import window as window_module
 from crenel.protocol import HelperReply
@@ -214,12 +215,32 @@ def test_the_protected_names_mark_write_folders(window, monkeypatch, conf):
     assert [c.name for c in window.pending()] == ["ABC"]  # .git is no longer wanted
 
 
+def test_the_window_is_framed_with_the_menu_bar_below_the_title_bar(qtbot, window):
+    frame = window.findChild(WindowFrame)
+    assert frame is not None and len(frame.title_bar.buttons) == 3  # minimize, maximize, close
+    window.show()
+    qtbot.waitExposed(window)
+    assert window.menuBar().geometry().top() >= frame.title_bar.geometry().bottom()
+
+
 def test_show_commands(window):
     assert window.commands_text() == "Nothing to apply."
     window.choose("DEF", READ)
     text = window.commands_text()
     assert "# DEF: hidden → read-only" in text
     assert "mount -o remount,bind,ro" in text
+
+
+def test_the_commands_dialog_is_framed_with_a_close_button_only(window):
+    window.choose("DEF", READ)
+    window.show_commands()
+    dialog = window._commands_dialog
+    assert dialog is not None
+    frame = dialog.findChild(WindowFrame)
+    assert frame is not None and frame.title_bar.buttons == [frame.title_bar.close_button]
+    # The title bar is inside the window, so the dialog is taller by it.
+    assert dialog.height() == 420 + frame.title_bar.height()
+    dialog.close()
 
 
 def test_missing_settings_are_reported_not_listed(qtbot, conf, runner):

@@ -19,14 +19,13 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QMessageBox,
     QPlainTextEdit,
     QVBoxLayout,
     QWidget,
 )
-from windowchrome import apply_scrollbars
+from windowchrome import apply_frame, apply_scrollbars
 
-from . import APP_NAME
+from . import APP_NAME, messages
 from .config import (
     CONFIG_PATH,
     Settings,
@@ -41,6 +40,7 @@ from .config import (
 from .shares import read_mountinfo, stray_entries
 from .style import (
     PRIMARY_BUTTON_BG,
+    SCROLLBAR_HANDLE,
     SECONDARY_BUTTON_BG,
     action_button,
     action_button_size,
@@ -94,6 +94,7 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(f"{APP_NAME} — Settings")
         self.setMinimumWidth(MIN_WIDTH)
+        apply_frame(self)
 
         settings, error = load_settings()
 
@@ -173,7 +174,7 @@ class SettingsDialog(QDialog):
         edit.setFont(mono_font())
         edit.setToolTip(PROTECTED_TIP)
         edit.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
-        apply_scrollbars(edit)
+        apply_scrollbars(edit, handle=SCROLLBAR_HANDLE)
         margin = 2 * (edit.document().documentMargin() + edit.frameWidth())
         edit.setFixedHeight(round(edit.fontMetrics().lineSpacing() * PROTECTED_ROWS + margin))
         self._layout.addWidget(edit)
@@ -219,7 +220,7 @@ class SettingsDialog(QDialog):
         settings = self.candidate()
         problems = folder_problems(settings) + protected_problems(settings.protected)
         if problems:
-            QMessageBox.warning(self, f"{APP_NAME} — Settings", "\n\n".join(problems))
+            messages.warning(self, f"{APP_NAME} — Settings", "\n\n".join(problems))
             return
         try:
             stray = stray_entries(settings.share_path, read_mountinfo())
@@ -228,13 +229,13 @@ class SettingsDialog(QDialog):
             # strays. The window says the table is unreadable, and lists nothing.
             stray = []
         if stray:
-            QMessageBox.warning(
+            messages.warning(
                 self, f"{APP_NAME} — Settings", stray_text(settings.share_path, stray)
             )
             return
         error = ensure_share_dir(settings) or save_settings(settings)
         if error:
-            QMessageBox.warning(self, f"{APP_NAME} — Settings", error)
+            messages.warning(self, f"{APP_NAME} — Settings", error)
             return
         self.accept()
 
