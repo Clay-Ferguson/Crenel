@@ -1,9 +1,8 @@
 """The config file: what it holds, how it is read, and how it is written.
 
 One YAML file at `CONFIG_PATH` holds the things the settings dialog edits:
-the projects folder whose subfolders the window lists, whether the Markdown
-files directly inside it are shared too (read-only), the share folder the
-VM's virtiofs share points at, and the protected names, the folders or files
+the projects folder whose subfolders (and Markdown files) the window lists,
+the share folder the VM's virtiofs share points at, and the protected names, the folders or files
 inside each project shared Write that are made read-only (`.git` by default).
 
 Every key is described once, in `KEYS`, and loading and rendering are driven
@@ -58,9 +57,6 @@ class Settings:
     # The protected-names lines as written, comments included. See
     # `protected_names` for the ones in use.
     protected: tuple[str, ...] = DEFAULT_PROTECTED
-    # Share the Markdown files directly inside the projects folder (an
-    # AGENTS.md, say), read-only. Never its folders: those are the projects.
-    share_projects_files: bool = False
 
     @property
     def protected_names(self) -> tuple[str, ...]:
@@ -105,13 +101,6 @@ ROOT_COMMENT = """\
   # folders directly inside it are listed, never anything deeper.
 """
 
-FILES_COMMENT = """\
-  # true to also show the VM the Markdown files (*.md) directly inside the
-  # projects folder, read-only, beside the projects in the share folder: an
-  # AGENTS.md that agents look for in a project's parent folder, say. Folders
-  # are never included, and hidden files and symlinks are skipped.
-"""
-
 SHARE_COMMENT = """\
   # The folder the VM's virtiofs share points at. Crenel mounts each project
   # you share into it, so it must be empty apart from what Crenel puts there.
@@ -127,7 +116,6 @@ PROTECTED_COMMENT = """\
 """
 
 STRING = "string"
-BOOL = "bool"
 LIST = "list"
 
 
@@ -142,16 +130,11 @@ class Key:
 
 KEYS = (
     Key("projects_root", "folders", "projects_root", STRING, ROOT_COMMENT),
-    Key("share_projects_files", "folders", "share_projects_files", BOOL, FILES_COMMENT),
     Key("share_dir", "folders", "share_dir", STRING, SHARE_COMMENT),
     Key("protected", "protection", "protected", LIST, PROTECTED_COMMENT),
 )
 
 SECTIONS = ("folders", "protection")
-
-# Keys older versions wrote, dropped instead of carried through a rewrite.
-# `protect_git` became the `protected` list (see `_migrated`).
-RETIRED = {("protection", "protect_git")}
 
 assert sorted(key.field for key in KEYS) == sorted(f.name for f in fields(Settings))
 
@@ -183,8 +166,7 @@ def _render_key(key: Key, value: Any) -> str:
             return f"{key.comment}  {key.name}: []\n"
         items = "".join(f"    - {_quote(item)}\n" for item in value)
         return f"{key.comment}  {key.name}:\n{items}"
-    text = ("true" if value else "false") if key.kind == BOOL else _quote(value)
-    return f"{key.comment}  {key.name}: {text}\n"
+    return f"{key.comment}  {key.name}: {_quote(value)}\n"
 
 
 def render_config(settings: Settings, config: dict | None = None) -> str:
@@ -196,11 +178,7 @@ def render_config(settings: Settings, config: dict | None = None) -> str:
         known = {key.name for key in keys}
         text += f"\n{section}:\n"
         text += "\n".join(_render_key(key, getattr(settings, key.field)) for key in keys)
-        extra = {
-            k: v
-            for k, v in _section(config.get(section)).items()
-            if k not in known and (section, k) not in RETIRED
-        }
+        extra = {k: v for k, v in _section(config.get(section)).items() if k not in known}
         text += _indent_yaml(extra, "  ")
     extra_top = {k: v for k, v in config.items() if k not in SECTIONS}
     return text + _indent_yaml(extra_top, "")
@@ -242,9 +220,6 @@ def read_config() -> tuple[dict, str | None]:
 
 def _read_key(config: dict, key: Key, default: Any) -> Any:
     value = _section(config.get(key.section)).get(key.name)
-    if key.kind == BOOL:
-        # Only a real YAML boolean counts; "true" in quotes is a typo.
-        return value if isinstance(value, bool) else default
     if key.kind == LIST:
         # Items that are neither plain names nor comments are dropped one by one.
         if not isinstance(value, list):
@@ -257,15 +232,6 @@ def _read_key(config: dict, key: Key, default: Any) -> Any:
     return value.strip()
 
 
-def _migrated(config: dict) -> dict:
-    """`config` with an older version's `protect_git` switch read as a list."""
-    protection = _section(config.get("protection"))
-    old = protection.get("protect_git")
-    if "protected" in protection or not isinstance(old, bool):
-        return config
-    return {**config, "protection": {**protection, "protected": [".git"] if old else []}}
-
-
 def load_settings() -> tuple[Settings, str | None]:
     """The file as a `Settings`, plus a message if it could not be read.
 
@@ -273,7 +239,6 @@ def load_settings() -> tuple[Settings, str | None]:
     only that key.
     """
     config, error = read_config()
-    config = _migrated(config)
     fallback = Settings()
     values = {key.field: _read_key(config, key, getattr(fallback, key.field)) for key in KEYS}
     return Settings(**values), error

@@ -90,13 +90,11 @@ def run(changes, force=False, protected=(".git",)):
     finally:
         sys.stdout = real
     reply = json.loads(buffer.getvalue())
+    rows = shares.read_states(root, share, list(protected))
     states = {
-        n: [s.mode, list(s.protections)]
-        for n, s in shares.read_states(root, share, list(protected)).items()
+        n: [s.mode, list(s.protections)] for n, s in rows.items() if s.kind == shares.FOLDER
     }
-    files = {
-        n: [s.mode, s.current] for n, s in shares.read_file_states(root, share).items()
-    }
+    files = {n: [s.mode, s.current] for n, s in rows.items() if s.kind == shares.FILE}
     return {"code": code, "reply": reply, "states": states, "files": files}
 
 def can_write(path):
@@ -360,7 +358,7 @@ def test_a_file_is_read_only_in_the_vm(projects):
     ])
     assert out[0]["reply"]["results"][0]["ok"]
     assert out[0]["files"]["AGENTS.md"] == ["read", True]
-    assert "AGENTS.md" not in out[0]["states"]  # a file is never a project row
+    assert "AGENTS.md" not in out[0]["states"]  # a file row, not a project row
     assert out[1] == AGENTS
     assert out[2:6] == [False, False, False, True]  # VM, share: no; your own file: yes
     assert out[6] == ["AGENTS.md"]

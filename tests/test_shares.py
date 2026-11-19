@@ -9,6 +9,7 @@ from crenel.shares import (
     BIND_FILE,
     CONFLICT,
     FILE,
+    FOLDER,
     HIDDEN,
     MKDIR,
     MKFILE,
@@ -21,21 +22,18 @@ from crenel.shares import (
     UNLINK,
     WRITE,
     Change,
-    FileState,
     FolderState,
     MountEntry,
     Step,
     classify,
-    classify_file,
     find_targets,
     list_project_files,
     list_projects,
     needs_change,
-    needs_file_change,
     parse_mountinfo,
     plan_changes,
-    plan_file,
-    plan_folder,
+    plan_share,
+    read_states,
     render_step,
     shareable_file_name,
     stray_entries,
@@ -168,7 +166,7 @@ def test_needs_change_counts_protections():
 
 
 def plan(mode, entries, protected=GIT, found=GIT, is_same_dir=same):
-    return plan_folder(
+    return plan_share(
         Change("ABC", mode), ROOT, SHARE, protected, entries,
         stage=STAGE, is_same_dir=is_same_dir, targets=targets(found),
     ).steps
@@ -294,12 +292,12 @@ FSRC = ROOT + "/AGENTS.md"
 
 
 def classify_file_with(entries, is_same_dir=same):
-    return classify_file("AGENTS.md", ROOT, SHARE, entries, is_same_dir=is_same_dir)
+    return classify("AGENTS.md", ROOT, SHARE, entries, GIT, kind=FILE, is_same_dir=is_same_dir)
 
 
 def test_classify_file():
-    assert classify_file_with([]) == FileState("AGENTS.md", HIDDEN)
-    assert classify_file_with([entry(F, ro=True)]) == FileState("AGENTS.md", READ)
+    assert classify_file_with([]) == FolderState("AGENTS.md", HIDDEN, kind=FILE)
+    assert classify_file_with([entry(F, ro=True)]) == FolderState("AGENTS.md", READ, kind=FILE)
     stale = classify_file_with([entry(F, ro=True)], is_same_dir=differ)
     assert stale.mode == READ and not stale.current
     assert classify_file_with([entry(F)]).mode == CONFLICT  # read-write
@@ -307,18 +305,36 @@ def test_classify_file():
     assert classify_file_with([entry(SHARE + "/AGENTS.mdx", ro=True)]).mode == HIDDEN
 
 
-def test_needs_file_change():
-    assert not needs_file_change(FileState("a.md", HIDDEN), HIDDEN)
-    assert not needs_file_change(FileState("a.md", READ), READ)
-    assert needs_file_change(FileState("a.md", READ, current=False), READ)
-    assert not needs_file_change(FileState("a.md", HIDDEN, current=False), HIDDEN)
-    assert needs_file_change(FileState("a.md", HIDDEN), READ)
-    assert needs_file_change(FileState("a.md", READ), HIDDEN)
-    assert needs_file_change(FileState("a.md", CONFLICT), READ)
+def test_needs_change_for_a_file():
+    def state(mode, current=True):
+        return FolderState("a.md", mode, kind=FILE, current=current)
+
+    assert not needs_change(state(HIDDEN), HIDDEN)
+    assert not needs_change(state(READ), READ)
+    assert needs_change(state(READ, current=False), READ)  # replaced on the host
+    assert not needs_change(state(HIDDEN, current=False), HIDDEN)
+    assert needs_change(state(HIDDEN), READ)
+    assert needs_change(state(READ), HIDDEN)
+    assert needs_change(state(CONFLICT), READ)
+
+
+def test_read_states_lists_projects_then_files(projects):
+    root, share = projects
+    os.mkdir(share)
+    with open(os.path.join(root, "a-notes.md"), "w") as handle:
+        handle.write("x")
+    states = read_states(root, share, GIT)
+    assert list(states) == ["ABC", "DEF", "ghi", "a-notes.md", "AGENTS.md"]
+    assert [s.kind for s in states.values()] == [FOLDER] * 3 + [FILE] * 2
+    assert all(s.mode == HIDDEN for s in states.values())
+    assert states["ABC"].targets == GIT
+    assert states["AGENTS.md"].targets == ()
 
 
 def file_plan(mode, entries):
-    return plan_file(Change("AGENTS.md", mode, FILE), ROOT, SHARE, entries, stage=STAGE).steps
+    return plan_share(
+        Change("AGENTS.md", mode, FILE), ROOT, SHARE, GIT, entries, stage=STAGE
+    ).steps
 
 
 def test_a_file_is_built_read_only_then_moved_in():

@@ -32,14 +32,14 @@ into the share folder, which gives it a link group of its own, and the VM's
 copy arrives finished. A change to an existing share is a fresh re-share,
 never an in-place remount, because a remount would never reach the VM.
 
-**Files.** With the *Share Projects Files* setting on, the Markdown files
-directly inside the projects folder (an `AGENTS.md` that agents look for in
-a project's parent folder) are shared too, each read-only and built the same
-way, so the VM sees `<share folder>/AGENTS.md` beside the projects. A file
-bind mount holds on to the file itself (its inode), so a host editor that
-saves by writing a new file and renaming it over the old one leaves the VM
-with the old text. `classify_file` notices (`FileState.current`), and the
-next Apply shares the new file.
+**Files.** The Markdown files directly inside the projects folder (an
+`AGENTS.md` that agents look for in a project's parent folder) are listed
+after the projects, each Hidden or Read, never Write. A shared one is built
+the same way, so the VM sees `<share folder>/AGENTS.md` beside the projects.
+A file bind mount holds on to the file itself (its inode), so a host editor
+that saves by writing a new file and renaming it over the old one leaves the
+VM with the old text. `classify` notices (`FolderState.current`), and the
+change shows as pending until Apply shares the new file.
 """
 
 from __future__ import annotations
@@ -60,13 +60,13 @@ MODES = (HIDDEN, READ, WRITE)
 # The only modes a file can have: a shared file is never writable.
 FILE_MODES = (HIDDEN, READ)
 
-# What a change is to: a project folder (a row in the window), or one of the
-# Markdown files directly inside the projects folder.
+# What a row is: a project folder, or one of the Markdown files directly
+# inside the projects folder.
 FOLDER = "folder"
 FILE = "file"
 KINDS = (FOLDER, FILE)
 
-# The files shared with Share Projects Files on: Markdown only.
+# The only files that can be shared: Markdown.
 FILE_SUFFIX = ".md"
 
 # Not a mode anyone can choose. It is what a folder is when something is
@@ -173,7 +173,7 @@ def list_projects(root: str) -> list[str]:
 
 
 def list_project_files(root: str) -> list[str]:
-    """The files directly under `root` that Share Projects Files shares, sorted.
+    """The files directly under `root` that can be shared, sorted.
 
     Regular files only, named `*.md` (any case) and not hidden: a symlink is
     left out, since its target could be anything, and so is a dotfile. A
@@ -241,8 +241,8 @@ def valid_name(name: object) -> bool:
 
 
 def shareable_file_name(name: object) -> bool:
-    """Whether `name` is a file Share Projects Files may share: a plain,
-    non-hidden name ending in `.md` (any case)."""
+    """Whether `name` is a file that may be shared: a plain, non-hidden name
+    ending in `.md` (any case)."""
     return (
         valid_name(name)
         and isinstance(name, str)
@@ -283,16 +283,19 @@ def same_dir(first: str, second: str) -> bool:
     return (a.st_dev, a.st_ino) == (b.st_dev, b.st_ino)
 
 
-# -- one folder's state ----------------------------------------------------------
+# -- one row's state ------------------------------------------------------------
 
 
 @dataclass(frozen=True)
 class FolderState:
-    """What the VM can see of one project right now.
+    """What the VM can see of one project, or (`kind` FILE) one file, right now.
 
     `protections` are the read-only protected names mounted in place (sorted),
-    and `targets` the ones on the list that this project has. `detail`
-    explains a CONFLICT and is empty otherwise.
+    and `targets` the ones on the list that this project has; a file has
+    neither. `detail` explains a CONFLICT and is empty otherwise. `current`
+    says whether a shared file is still the file in the projects folder: it
+    is not once that file has been replaced (saved by writing a new file and
+    renaming it) or deleted, and the VM then still sees the old one.
     """
 
     name: str
@@ -300,6 +303,8 @@ class FolderState:
     protections: tuple[str, ...] = ()
     targets: tuple[str, ...] = ()
     detail: str = ""
+    kind: str = FOLDER
+    current: bool = True
 
 
 def classify(
@@ -309,6 +314,7 @@ def classify(
     entries: Sequence[MountEntry],
     protected: Sequence[str],
     *,
+    kind: str = FOLDER,
     is_same_dir: Callable[[str, str], bool] = same_dir,
     targets: Callable[[str, Sequence[str]], tuple[str, ...]] = find_targets,
 ) -> FolderState:
@@ -318,10 +324,26 @@ def classify(
     bind of something directly inside the project onto itself, whether or
     not that name is on the `protected` list right now. One left over from
     an older list then shows as a change to apply, not as a conflict.
+
+    A file is HIDDEN, READ (one read-only mount, `current` or not) or a
+    CONFLICT.
     """
     destination = os.path.join(share, name)
     source = os.path.join(root, name)
     under = mounts_under(entries, destination)
+    if kind == FILE:
+        if not under:
+            return FolderState(name, HIDDEN, kind=FILE)
+        if len(under) > 1 or under[0].mount_point != destination:
+            return FolderState(
+                name, CONFLICT, detail=f"Unexpected mounts at {destination}.", kind=FILE
+            )
+        if not under[0].read_only:
+            return FolderState(
+                name, CONFLICT, detail=f"{destination} is mounted read-write.", kind=FILE
+            )
+        return FolderState(name, READ, kind=FILE, current=is_same_dir(destination, source))
+
     found_targets = targets(source, protected)
     if not under:
         return FolderState(name, HIDDEN, targets=found_targets)
@@ -370,87 +392,23 @@ def _is_file(path: str) -> bool:
 
 
 def read_states(root: str, share: str, protected: Sequence[str]) -> dict[str, FolderState]:
-    """Every project's state, by name.
+    """Every row's state, by name: the projects, then the files.
 
-    The names are the folders under `root` plus anything mounted directly
-    under `share`, except file shares (see `read_file_states`). A project
+    The names are the folders and shareable files under `root` plus anything
+    mounted directly under `share` (a file if a file is mounted there). One
     that has been renamed or deleted while it was shared then still shows
-    up, as a CONFLICT that can be set to Hidden.
+    up, to be hidden. Each group is sorted by name.
     """
     entries = read_mountinfo()
-    names = set(list_projects(root))
+    kinds = dict.fromkeys(list_projects(root), FOLDER)
+    kinds.update(dict.fromkeys(list_project_files(root), FILE))
     for name in _mounted_names(share, entries):
-        if not _is_file(os.path.join(share, name)):
-            names.add(name)
+        kinds[name] = FILE if _is_file(os.path.join(share, name)) else FOLDER
+    ordered = sorted(kinds, key=lambda n: (kinds[n] == FILE, n.casefold()))
     return {
-        name: classify(name, root, share, entries, protected)
-        for name in sorted(names, key=str.casefold)
+        name: classify(name, root, share, entries, protected, kind=kinds[name])
+        for name in ordered
     }
-
-
-# -- one file's state --------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class FileState:
-    """What the VM can see of one file directly inside the projects folder.
-
-    `mode` is HIDDEN, READ or CONFLICT. `current` says whether a READ share
-    is still the file in the projects folder: it is not once that file has
-    been replaced (saved by writing a new file and renaming it) or deleted,
-    and the VM then still sees the old one.
-    """
-
-    name: str
-    mode: str
-    current: bool = True
-    detail: str = ""
-
-
-def classify_file(
-    name: str,
-    root: str,
-    share: str,
-    entries: Sequence[MountEntry],
-    *,
-    is_same_dir: Callable[[str, str], bool] = same_dir,
-) -> FileState:
-    """Work out file `name`'s state from the mounts at `<share>/<name>`."""
-    destination = os.path.join(share, name)
-    source = os.path.join(root, name)
-    under = mounts_under(entries, destination)
-    if not under:
-        return FileState(name, HIDDEN)
-    if len(under) > 1 or under[0].mount_point != destination:
-        return FileState(name, CONFLICT, detail=f"Unexpected mounts at {destination}.")
-    if not under[0].read_only:
-        return FileState(name, CONFLICT, detail=f"{destination} is mounted read-write.")
-    return FileState(name, READ, current=is_same_dir(destination, source))
-
-
-def read_file_states(root: str, share: str) -> dict[str, FileState]:
-    """Every shareable file's state, by name.
-
-    The names are the files `list_project_files` finds in `root` plus every
-    file mounted directly under `share`, so one that has been deleted or
-    renamed while it was shared still shows up, to be hidden.
-    """
-    entries = read_mountinfo()
-    names = set(list_project_files(root))
-    for name in _mounted_names(share, entries):
-        if _is_file(os.path.join(share, name)):
-            names.add(name)
-    return {
-        name: classify_file(name, root, share, entries)
-        for name in sorted(names, key=str.casefold)
-    }
-
-
-def needs_file_change(state: FileState, desired: str) -> bool:
-    """Whether Apply has anything to do to make file `state` match `desired`."""
-    if state.mode != desired:
-        return True
-    return desired == READ and not state.current
 
 
 def expected_protections(mode: str, targets: Sequence[str]) -> tuple[str, ...]:
@@ -461,6 +419,8 @@ def expected_protections(mode: str, targets: Sequence[str]) -> tuple[str, ...]:
 def needs_change(state: FolderState, desired: str) -> bool:
     """Whether Apply has anything to do to make `state` match `desired`."""
     if state.mode != desired:
+        return True
+    if desired != HIDDEN and not state.current:
         return True
     return state.protections != expected_protections(desired, state.targets)
 
@@ -514,7 +474,7 @@ def _deepest_first(entries: Sequence[MountEntry]) -> list[MountEntry]:
     return [entry for _index, entry in indexed]
 
 
-def plan_folder(
+def plan_share(
     change: Change,
     root: str,
     share: str,
@@ -525,20 +485,20 @@ def plan_folder(
     is_same_dir: Callable[[str, str], bool] = same_dir,
     targets: Callable[[str, Sequence[str]], tuple[str, ...]] = find_targets,
 ) -> FolderPlan:
-    """The steps that take one folder from what `entries` says to `change.mode`.
+    """The steps that take one folder or file from what `entries` says to `change.mode`.
 
-    Whatever the folder was, everything mounted for it in the share folder
-    comes off first, deepest first. Hidden stops there and removes the empty mount point. Read and
-    Write then build the share complete in the scratch spot and move it into
-    the share folder, so the VM never sees it half-made. See the module
-    docstring for why a share is never adjusted in place.
+    Whatever it was, everything mounted for it in the share folder comes off
+    first, deepest first. Hidden stops there and removes the empty mount
+    point. Read and Write then build the share complete in the scratch spot
+    and move it into the share folder, so the VM never sees it half-made. See
+    the module docstring for why a share is never adjusted in place. A file
+    gets no protections.
     """
+    is_file = change.kind == FILE
+    bind, make, remove = (BIND_FILE, MKFILE, UNLINK) if is_file else (BIND, MKDIR, RMDIR)
     destination = os.path.join(share, change.name)
     source = os.path.join(root, change.name)
     staged = os.path.join(stage, change.name)
-    state = classify(
-        change.name, root, share, entries, protected, is_same_dir=is_same_dir, targets=targets
-    )
     plan = FolderPlan(change)
     steps = plan.steps
 
@@ -546,50 +506,22 @@ def plan_folder(
         Step(UMOUNT, e.mount_point) for e in _deepest_first(mounts_under(entries, destination))
     )
     if change.mode == HIDDEN:
-        steps.append(Step(RMDIR, destination))
+        steps.append(Step(remove, destination))
         return plan
 
-    steps.append(Step(BIND, staged, source))
+    steps.append(Step(bind, staged, source))
     steps.append(Step(PRIVATE, staged))
     if change.mode == READ:
         steps.append(Step(READONLY, staged))
-    for relative in expected_protections(change.mode, state.targets):
-        path = os.path.join(staged, relative)
-        steps.append(Step(BIND, path, path))
-        steps.append(Step(READONLY, path))
-    steps.append(Step(MKDIR, destination))
-    steps.append(Step(MOVE, destination, staged))
-    return plan
-
-
-def plan_file(
-    change: Change,
-    root: str,
-    share: str,
-    entries: Sequence[MountEntry],
-    *,
-    stage: str = STAGE_DIR,
-) -> FolderPlan:
-    """The steps that take one file from what `entries` says to `change.mode`.
-
-    The same shape as `plan_folder`: whatever is mounted there comes off,
-    Hidden removes the empty mount point, and Read builds a read-only bind of
-    the file in the scratch spot and moves it in.
-    """
-    destination = os.path.join(share, change.name)
-    staged = os.path.join(stage, change.name)
-    plan = FolderPlan(change)
-    steps = plan.steps
-    steps.extend(
-        Step(UMOUNT, e.mount_point) for e in _deepest_first(mounts_under(entries, destination))
-    )
-    if change.mode == HIDDEN:
-        steps.append(Step(UNLINK, destination))
-        return plan
-    steps.append(Step(BIND_FILE, staged, os.path.join(root, change.name)))
-    steps.append(Step(PRIVATE, staged))
-    steps.append(Step(READONLY, staged))
-    steps.append(Step(MKFILE, destination))
+    if not is_file:
+        state = classify(
+            change.name, root, share, entries, protected, is_same_dir=is_same_dir, targets=targets
+        )
+        for relative in expected_protections(change.mode, state.targets):
+            path = os.path.join(staged, relative)
+            steps.append(Step(BIND, path, path))
+            steps.append(Step(READONLY, path))
+    steps.append(Step(make, destination))
     steps.append(Step(MOVE, destination, staged))
     return plan
 
@@ -604,13 +536,8 @@ def plan_changes(
     stage: str = STAGE_DIR,
     **probes,
 ) -> list[FolderPlan]:
-    """`plan_folder` (or `plan_file`) for every change, in the order given."""
-    return [
-        plan_file(c, root, share, entries, stage=stage)
-        if c.kind == FILE
-        else plan_folder(c, root, share, protected, entries, stage=stage, **probes)
-        for c in changes
-    ]
+    """`plan_share` for every change, in the order given."""
+    return [plan_share(c, root, share, protected, entries, stage=stage, **probes) for c in changes]
 
 
 def stage_setup_commands(stage: str = STAGE_DIR) -> list[str]:

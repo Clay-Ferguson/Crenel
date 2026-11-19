@@ -1,6 +1,7 @@
-"""The window: one row per project, with Hidden / Read / Write beside each.
+"""The window: one row per project or file, with Hidden / Read / Write beside each.
 
-The rows are the folders directly under the projects folder. Each row's radio
+The rows are the folders directly under the projects folder, then the
+Markdown files directly in it, which can only be Hidden or Read. Each row's radio
 buttons start out showing what the VM can see right now, read from the
 kernel's mount table at startup and on every Refresh. Clicking a radio
 button only *marks* a change: the row turns amber and bold, and nothing
@@ -11,16 +12,14 @@ A row in conflict (something mounted in its place that Crenel would not have
 put there) shows a ⚠ and no radio button. Choosing any mode for it makes
 Apply replace whatever is there.
 
-The Markdown files directly inside the projects folder have no rows. With
-Share Projects Files on (Settings) they are all to be shared read-only, and
-with it off none of them. Any file that is not as the setting says (newly
-added, removed, replaced on the host, or the setting just changed) counts
-as a pending change, and Apply brings it into line along with the rows.
+A shared file that has been replaced on the host (saved by writing a new
+file and renaming it) is still the old file in the VM. Its row shows as a
+pending change, and Apply shares the new one.
 
 Below the list:
 - Refresh re-reads the mounts (and asks before discarding marked changes).
 - Show Commands previews what Apply will do, as shell commands.
-- Hide All marks every project Hidden (files follow the setting).
+- Hide All marks every row Hidden.
 - Apply carries the changes out.
 """
 
@@ -32,6 +31,7 @@ from PyQt6.QtWidgets import (
     QAbstractItemView,
     QButtonGroup,
     QDialog,
+    QFileIconProvider,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -61,19 +61,15 @@ from .settings import show_settings, stray_text
 from .shares import (
     CONFLICT,
     FILE,
-    FOLDER,
+    FILE_MODES,
     HIDDEN,
     MODES,
     READ,
     WRITE,
     Change,
-    FileState,
     FolderState,
-    list_project_files,
     needs_change,
-    needs_file_change,
     plan_changes,
-    read_file_states,
     read_mountinfo,
     read_states,
     render_step,
@@ -97,7 +93,7 @@ from .style import (
 
 COL_NAME = 0
 MODE_COLUMNS = {HIDDEN: 1, READ: 2, WRITE: 3}
-HEADERS = ("Project", "Hidden", "Read", "Write")
+HEADERS = ("Name", "Hidden", "Read", "Write")
 MODE_IDS = {mode: index for index, mode in enumerate(MODES)}
 
 # Room for a 22px radio indicator plus the item padding, and for the header text.
@@ -107,9 +103,9 @@ ROW_HEIGHT = 44
 CONFLICT_MARK = "⚠ "
 
 MODE_TIPS = {
-    HIDDEN: "The VM cannot see this project at all",
-    READ: "The VM can read this project but not change it",
-    WRITE: "The VM can read and change this project",
+    HIDDEN: "The VM cannot see it at all",
+    READ: "The VM can read it but not change it",
+    WRITE: "The VM can read and change it (folders only)",
 }
 
 MODE_WORDS = {
@@ -122,7 +118,7 @@ MODE_WORDS = {
 APPLY_TIP = "Make the marked changes (asks for your password once)"
 REFRESH_TIP = "Read what is shared right now, dropping changes not yet applied"
 COMMANDS_TIP = "Show what Apply will do, as the equivalent shell commands"
-HIDE_ALL_TIP = "Mark every project Hidden (press Apply to carry it out)"
+HIDE_ALL_TIP = "Mark every project and file Hidden (press Apply to carry it out)"
 
 
 def printable(text: str) -> str:
@@ -176,10 +172,6 @@ class MainWindow(QMainWindow):
         self._desired: dict[str, str | None] = {}
         self._groups: dict[str, QButtonGroup] = {}
         self._rows: dict[str, int] = {}
-        # The Markdown files directly inside the projects folder, and the
-        # ones the setting wants shared (all of them, or none).
-        self._file_states: dict[str, FileState] = {}
-        self._wanted_files: set[str] = set()
         self._applying: dict[str, Change] = {}
         # What is in the share folder that Crenel did not put there.
         self._stray: list[str] = []
@@ -299,8 +291,6 @@ class MainWindow(QMainWindow):
         """
         if self.runner.running:
             return False
-        # Only the marks you made are discarded: the files' changes come from
-        # the settings and are worked out again below.
         marked = self.marked()
         if ask and marked:
             answer = messages.question(
@@ -325,25 +315,18 @@ class MainWindow(QMainWindow):
             if share_error:
                 problems = [share_error]
         states: dict[str, FolderState] = {}
-        file_states: dict[str, FileState] = {}
-        wanted: set[str] = set()
         stray: list[str] = []
         if not problems:
             try:
                 states = read_states(
                     settings.root_path, settings.share_path, settings.protected_names
                 )
-                file_states = read_file_states(settings.root_path, settings.share_path)
                 stray = stray_entries(settings.share_path, read_mountinfo())
             except OSError as exc:
                 problems = [f"Could not read the mount table: {exc.strerror or exc}"]
-                states, file_states = {}, {}
-            if settings.share_projects_files:
-                wanted = set(list_project_files(settings.root_path))
+                states = {}
         self._problem = problems[0] if problems else ""
         self._states = states
-        self._file_states = file_states
-        self._wanted_files = wanted
         self._stray = stray
         self._show_paths()
         self._desired = {n: (s.mode if s.mode != CONFLICT else None) for n, s in states.items()}
@@ -357,12 +340,7 @@ class MainWindow(QMainWindow):
     def _show_paths(self) -> None:
         root = self._settings.root_path or "(not set)"
         share = self._settings.share_path or "(not set)"
-        text = f"Projects: {root}\nVM share: {share}"
-        shared = self.shared_files()
-        if self._settings.share_projects_files or shared:
-            listed = ", ".join(map(printable, shared)) if shared else "none yet"
-            text += f"\nShared files (read-only): {listed}"
-        self.paths_label.setText(text)
+        self.paths_label.setText(f"Projects: {root}\nVM share: {share}")
 
     # -- the list -------------------------------------------------------------------
 
@@ -373,12 +351,17 @@ class MainWindow(QMainWindow):
         self._groups.clear()
         self._rows.clear()
         self.table.setRowCount(len(self._states))
-        for row, name in enumerate(self._states):
+        icons = QFileIconProvider()
+        folder_icon = icons.icon(QFileIconProvider.IconType.Folder)
+        file_icon = icons.icon(QFileIconProvider.IconType.File)
+        for row, (name, state) in enumerate(self._states.items()):
+            is_file = state.kind == FILE
             item = QTableWidgetItem(printable(name))
             item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            item.setIcon(file_icon if is_file else folder_icon)
             self.table.setItem(row, COL_NAME, item)
             group = QButtonGroup(self)
-            for mode in MODES:
+            for mode in FILE_MODES if is_file else MODES:
                 radio = QRadioButton()
                 radio.setToolTip(MODE_TIPS[mode])
                 radio.setAccessibleName(f"{printable(name)}: {mode}")
@@ -396,10 +379,10 @@ class MainWindow(QMainWindow):
             self._sync_radios(name)
             self._paint(name)
 
-    def radio(self, name: str, mode: str) -> QRadioButton:
-        """The radio button for `name` in `mode` (for tests and accessibility)."""
+    def radio(self, name: str, mode: str) -> QRadioButton | None:
+        """The radio button for `name` in `mode`, None for Write on a file (for tests)."""
         button = self._groups[name].button(MODE_IDS[mode])
-        assert isinstance(button, QRadioButton)
+        assert button is None or isinstance(button, QRadioButton)
         return button
 
     def names(self) -> list[str]:
@@ -444,6 +427,8 @@ class MainWindow(QMainWindow):
         else:
             item.setData(Qt.ItemDataRole.ForegroundRole, None)
         tip = f"Now: {MODE_WORDS[state.mode]}"
+        if state.mode != HIDDEN and not state.current:
+            tip += " (out of date: the file was replaced on the host)"
         if state.protections:
             tip += f" (read-only: {', '.join(map(printable, state.protections))})"
         if state.detail:
@@ -462,29 +447,9 @@ class MainWindow(QMainWindow):
         return needs_change(self._states[name], desired)
 
     def marked(self) -> list[Change]:
-        """The project changes marked with the radio buttons, in list order."""
-        return [Change(name, mode) for name, mode in self._desired.items()
+        """The changes Apply would make, in list order."""
+        return [Change(name, mode, self._states[name].kind) for name, mode in self._desired.items()
                 if mode is not None and self.is_pending(name)]
-
-    def file_changes(self) -> list[Change]:
-        """The files that are not as Share Projects Files says, made so."""
-        changes = []
-        for name, state in self._file_states.items():
-            mode = READ if name in self._wanted_files else HIDDEN
-            if needs_file_change(state, mode):
-                changes.append(Change(name, mode, FILE))
-        return changes
-
-    def file_state(self, name: str) -> FileState:
-        return self._file_states[name]
-
-    def shared_files(self) -> list[str]:
-        """The files the VM can see now, in name order."""
-        return [n for n, s in self._file_states.items() if s.mode == READ]
-
-    def pending(self) -> list[Change]:
-        """The changes Apply would make: the marked projects, then the files."""
-        return self.marked() + self.file_changes()
 
     def choose(self, name: str, mode: str) -> None:
         """Mark `name` to become `mode` (what a radio button click does)."""
@@ -510,18 +475,16 @@ class MainWindow(QMainWindow):
             return self._problem
         modes = [s.mode for s in self._states.values()]
         read, write, conflicts = modes.count(READ), modes.count(WRITE), modes.count(CONFLICT)
-        text = (
-            f"{plural(len(modes), 'project')} · {read + write} shared "
-            f"({write} writable, {read} read-only)"
-        )
+        files = sum(1 for s in self._states.values() if s.kind == FILE)
+        text = plural(len(modes) - files, "project")
+        if files:
+            text += f" · {plural(files, 'file')}"
+        text += f" · {read + write} shared ({write} writable, {read} read-only)"
         if conflicts:
             text += f" · {conflicts} in conflict"
-        files = len(self.shared_files())
-        if files or self._settings.share_projects_files:
-            text += f" · {plural(files, 'file')} shared"
         if self._stray:
             text += f" · ⚠ {plural(len(self._stray), 'stray item')} in the share folder"
-        pending = len(self.pending())
+        pending = len(self.marked())
         if pending:
             text += f" · {plural(pending, 'change')} not applied yet"
         if self._last_result:
@@ -530,7 +493,7 @@ class MainWindow(QMainWindow):
 
     def _update(self) -> None:
         running = self.runner.running
-        pending = bool(self.pending())
+        pending = bool(self.marked())
         self.apply_button.setEnabled(pending and not running)
         self.commands_button.setEnabled(pending and not running)
         self.hide_all_button.setEnabled(
@@ -546,7 +509,7 @@ class MainWindow(QMainWindow):
 
     def commands_text(self) -> str:
         """What Apply will do, folder by folder, as shell commands."""
-        changes = self.pending()
+        changes = self.marked()
         if not changes:
             return "Nothing to apply."
         settings = self._settings
@@ -570,15 +533,11 @@ class MainWindow(QMainWindow):
         for plan in plans:
             change = plan.change
             lines.append("")
+            state = self._states[change.name]
+            before = MODE_WORDS[state.mode] if state.current else "out of date"
+            label = printable(change.name)
             if change.kind == FILE:
-                state = self._file_states[change.name]
-                before = MODE_WORDS[state.mode]
-                if state.mode == READ and not state.current:
-                    before = "out of date"
-                label = f"file {printable(change.name)}"
-            else:
-                before = MODE_WORDS[self._states[change.name].mode]
-                label = printable(change.name)
+                label = f"file {label}"
             lines.append(f"# {label}: {before} → {MODE_WORDS[change.mode]}")
             lines.extend(render_step(step) for step in plan.steps)
             if not plan.steps:
@@ -599,7 +558,7 @@ class MainWindow(QMainWindow):
     def apply(self) -> None:
         if self.runner.running:
             return
-        changes = self.pending()
+        changes = self.marked()
         if changes:
             self._start(changes, force=False)
 
@@ -657,7 +616,7 @@ class MainWindow(QMainWindow):
         for result in results:
             name = result["name"]
             if result.get("ok"):
-                now = self._describe(name, result["mode"], result.get("kind", FOLDER))
+                now = self._describe(name, result["mode"])
                 lines.append(f"✓  {printable(name)}: now {now}")
             elif result.get("busy"):
                 lines.append(f"…  {printable(name)}: in use, not changed yet")
@@ -666,15 +625,12 @@ class MainWindow(QMainWindow):
         lines += [f"Note: {warning}" for warning in reply.warnings]
         return headline + "\n\n" + "\n".join(lines)
 
-    def _describe(self, name: str, requested: str, kind: str = FOLDER) -> str:
+    def _describe(self, name: str, requested: str) -> str:
         """`name`'s current state in words, e.g. "writable, protected: .git"."""
-        if kind == FILE:
-            file_state = self._file_states.get(name)
-            return MODE_WORDS[file_state.mode if file_state else requested]
         state = self._states.get(name)
         if state is None:
-            # A hidden project that no longer exists on the host drops out
-            # of the list altogether.
+            # A hidden project or file that no longer exists on the host
+            # drops out of the list altogether.
             return MODE_WORDS[requested]
         text = MODE_WORDS[state.mode]
         if state.mode == WRITE and state.protections:
@@ -684,14 +640,12 @@ class MainWindow(QMainWindow):
     def _on_reply(self, reply: HelperReply) -> None:
         requested, self._applying = self._applying, {}
         self._status.set_status("", busy=False)
-        # Only project marks are kept: the files' changes are worked out again.
-        marks = {n: c.mode for n, c in requested.items() if c.kind == FOLDER}
         if reply.error:
-            self.refresh(ask=False, keep=marks)
+            self.refresh(ask=False, keep={n: c.mode for n, c in requested.items()})
             messages.warning(self, f"{APP_NAME} — Apply", reply.error)
             return
         busy = {name: requested[name] for name in reply.busy if name in requested}
-        self.refresh(ask=False, keep={n: c.mode for n, c in busy.items() if c.kind == FOLDER})
+        self.refresh(ask=False, keep={n: c.mode for n, c in busy.items()})
         # A reply that is nothing but busy folders goes straight to the
         # question below; everything else gets a summary first.
         if len(busy) < len(reply.results):

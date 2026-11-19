@@ -16,7 +16,6 @@ from crenel.shares import (
     READ,
     WRITE,
     Change,
-    FileState,
     FolderState,
 )
 
@@ -25,11 +24,11 @@ from conftest import ok_results
 
 def test_lists_the_projects_all_hidden(window, projects):
     root, share = projects
-    assert window.names() == ["ABC", "DEF", "ghi"]
+    assert window.names() == ["ABC", "DEF", "ghi", "AGENTS.md"]
     assert all(window.state(n).mode == HIDDEN for n in window.names())
     assert window.radio("ABC", HIDDEN).isChecked()
     assert os.path.isdir(share)  # created on the first refresh
-    assert "3 projects · 0 shared" in window.status_text()
+    assert "3 projects · 1 file · 0 shared" in window.status_text()
     assert not window.apply_button.isEnabled()
     assert root in window.paths_label.text()
 
@@ -37,11 +36,11 @@ def test_lists_the_projects_all_hidden(window, projects):
 def test_clicking_marks_a_change(window):
     window.radio("ABC", WRITE).click()
     assert window.desired("ABC") == WRITE
-    assert [c.name for c in window.pending()] == ["ABC"]
+    assert [c.name for c in window.marked()] == ["ABC"]
     assert window.apply_button.isEnabled()
     assert "1 change not applied yet" in window.status_text()
     window.radio("ABC", HIDDEN).click()
-    assert window.pending() == []
+    assert window.marked() == []
 
 
 def test_apply_sends_one_request_and_refreshes(window, runner):
@@ -57,7 +56,7 @@ def test_apply_sends_one_request_and_refreshes(window, runner):
     ]
     assert runner.requests[0]["force"] is False
     # The fake changed nothing, so the refresh shows the real state again.
-    assert window.pending() == []
+    assert window.marked() == []
 
 
 def test_controls_are_locked_while_applying(window, runner):
@@ -76,7 +75,7 @@ def test_a_cancelled_password_keeps_the_changes_marked(window, runner, dialogs):
     runner.replies.append(HelperReply(error="The password prompt was cancelled."))
     window.apply()
     assert "cancelled" in dialogs[-1][1]
-    assert [c.name for c in window.pending()] == ["ABC"]
+    assert [c.name for c in window.marked()] == ["ABC"]
 
 
 def test_busy_folders_offer_a_forced_retry(window, runner, dialogs):
@@ -162,7 +161,7 @@ def test_busy_without_retry_stays_marked(window, runner, dialogs):
         {"name": "ABC", "mode": "read", "ok": False, "busy": True, "error": "", "warning": ""},)))
     window.apply()
     assert len(runner.requests) == 1
-    assert [c.name for c in window.pending()] == ["ABC"]
+    assert [c.name for c in window.marked()] == ["ABC"]
 
 
 def test_failures_are_reported(window, runner, dialogs):
@@ -183,17 +182,17 @@ def test_hide_all(window, monkeypatch, projects):
     window.refresh(ask=False)
     assert "2 shared (1 writable, 1 read-only)" in window.status_text()
     window.hide_all()
-    assert [c.name for c in window.pending()] == ["ABC", "DEF"]
+    assert [c.name for c in window.marked()] == ["ABC", "DEF"]
     assert not window.hide_all_button.isEnabled()
 
 
 def test_refresh_asks_before_dropping_changes(window, dialogs):
     window.choose("ABC", READ)
     assert window.refresh() is False  # the fixture answers No
-    assert window.pending()
+    assert window.marked()
     dialogs.answer = QMessageBox.StandardButton.Yes
     assert window.refresh() is True
-    assert window.pending() == []
+    assert window.marked() == []
 
 
 def test_a_conflict_row(window, monkeypatch):
@@ -204,7 +203,7 @@ def test_a_conflict_row(window, monkeypatch):
     assert not any(window.radio("ABC", m).isChecked() for m in (HIDDEN, READ, WRITE))
     assert "1 in conflict" in window.status_text()
     window.choose("ABC", HIDDEN)
-    assert window.pending()  # choosing anything replaces what is there
+    assert window.marked()  # choosing anything replaces what is there
 
 
 def test_the_protected_names_mark_write_folders(window, monkeypatch, conf):
@@ -214,17 +213,17 @@ def test_the_protected_names_mark_write_folders(window, monkeypatch, conf):
 
     monkeypatch.setattr(window_module, "read_states", read_states)
     window.refresh(ask=False)
-    assert window.pending() == []
+    assert window.marked() == []
     assert "(read-only: .git)" in window.table.item(window._rows["ABC"], 0).toolTip()
     conf(protected=(".git", ".envrc"))
     window.refresh(ask=False)
-    assert [c.name for c in window.pending()] == ["ABC"]  # .envrc is missing
+    assert [c.name for c in window.marked()] == ["ABC"]  # .envrc is missing
     conf(protected=(".git", "# .envrc"))
     window.refresh(ask=False)
-    assert window.pending() == []  # a commented name is not wanted
+    assert window.marked() == []  # a commented name is not wanted
     conf(protected=())
     window.refresh(ask=False)
-    assert [c.name for c in window.pending()] == ["ABC"]  # .git is no longer wanted
+    assert [c.name for c in window.marked()] == ["ABC"]  # .git is no longer wanted
 
 
 def test_the_window_is_framed_with_the_menu_bar_below_the_title_bar(qtbot, window):
@@ -296,62 +295,69 @@ def test_stray_items_block_sharing_but_not_hiding(window, runner, dialogs, monke
 # -- the projects folder's Markdown files ---------------------------------------------
 
 
-def files_shared(monkeypatch, files):
-    """Make every refresh see `files` (name: FileState), as if they were mounted."""
-    monkeypatch.setattr(window_module, "read_file_states", lambda root, share: files)
+def file_state(mode, current=True):
+    return FolderState("AGENTS.md", mode, kind=FILE, current=current)
 
 
-def test_files_stay_hidden_with_the_setting_off(window):
-    assert window.file_state("AGENTS.md").mode == HIDDEN
-    assert window.pending() == []
-    assert "file" not in window.status_text()
-    assert "Shared files" not in window.paths_label.text()
+def files_shared(monkeypatch, file):
+    """Make every refresh see the projects plus AGENTS.md as `file`."""
+    real = window_module.read_states
+
+    def read_states(root, share, protected):
+        states = real(root, share, protected)
+        states["AGENTS.md"] = file
+        return states
+
+    monkeypatch.setattr(window_module, "read_states", read_states)
 
 
-def test_the_setting_shares_the_files_on_apply(window, conf, runner, dialogs):
-    conf(share_files=True)
-    window.refresh(ask=False)
-    assert window.pending() == [Change("AGENTS.md", READ, FILE)]
-    assert window.marked() == []
-    assert window.apply_button.isEnabled()
-    assert "0 files shared" in window.status_text()
-    assert "Shared files (read-only): none yet" in window.paths_label.text()
+def test_files_are_rows_after_the_projects_without_write(window):
+    assert window.state("AGENTS.md").kind == FILE
+    assert window.radio("AGENTS.md", HIDDEN).isChecked()
+    assert window.radio("AGENTS.md", READ) is not None
+    assert window.radio("AGENTS.md", WRITE) is None
+    row = window.names().index("AGENTS.md")
+    assert window.table.cellWidget(row, window_module.MODE_COLUMNS[WRITE]) is None
+    assert window.radio("ABC", WRITE) is not None
+    assert not window.table.item(row, window_module.COL_NAME).icon().isNull()
+    assert window.table.horizontalHeaderItem(window_module.COL_NAME).text() == "Name"
+
+
+def test_sharing_a_file(window, runner):
+    window.radio("AGENTS.md", READ).click()
+    assert window.marked() == [Change("AGENTS.md", READ, FILE)]
     assert "# file AGENTS.md: hidden → read-only" in window.commands_text()
-    assert window.refresh() is True and dialogs == []  # nothing of yours to discard
     runner.replies.append(ok_results)
     window.apply()
     assert runner.requests[0]["changes"] == [{"name": "AGENTS.md", "mode": "read", "kind": "file"}]
 
 
-def test_shared_files_are_shown_and_hidden_when_the_setting_is_off(window, monkeypatch):
-    files_shared(monkeypatch, {"AGENTS.md": FileState("AGENTS.md", READ)})
+def test_an_out_of_date_file_is_a_pending_change(window, monkeypatch):
+    files_shared(monkeypatch, file_state(READ, current=False))
     window.refresh(ask=False)
-    assert "1 file shared" in window.status_text()
-    assert "Shared files (read-only): AGENTS.md" in window.paths_label.text()
-    assert window.pending() == [Change("AGENTS.md", HIDDEN, FILE)]  # the setting is off
-
-
-def test_an_out_of_date_file_is_a_pending_change(window, conf, monkeypatch):
-    conf(share_files=True)
-    files_shared(monkeypatch, {"AGENTS.md": FileState("AGENTS.md", READ, current=False)})
-    window.refresh(ask=False)
-    assert window.pending() == [Change("AGENTS.md", READ, FILE)]
+    assert window.marked() == [Change("AGENTS.md", READ, FILE)]
+    assert "out of date" in window.table.item(3, window_module.COL_NAME).toolTip()
     assert "# file AGENTS.md: out of date → read-only" in window.commands_text()
 
 
-def test_hide_all_leaves_the_files_to_the_setting(window, conf, monkeypatch):
-    conf(share_files=True)
-    files_shared(monkeypatch, {"AGENTS.md": FileState("AGENTS.md", READ)})
+def test_hide_all_hides_the_files_too(window, monkeypatch, runner):
+    files_shared(monkeypatch, file_state(READ))
     window.refresh(ask=False)
+    assert "1 file · 1 shared (0 writable, 1 read-only)" in window.status_text()
+    assert window.marked() == []
     window.choose("DEF", READ)
     window.hide_all()
-    assert window.pending() == []
+    assert window.marked() == [Change("AGENTS.md", HIDDEN, FILE)]
+    runner.replies.append(ok_results)
+    window.apply()
+    assert runner.requests[0]["changes"] == [
+        {"name": "AGENTS.md", "mode": "hidden", "kind": "file"}
+    ]
 
 
-def test_a_file_s_summary_line(window, conf, runner, dialogs, monkeypatch):
-    conf(share_files=True)
-    window.refresh(ask=False)
-    files_shared(monkeypatch, {"AGENTS.md": FileState("AGENTS.md", READ)})
+def test_a_file_s_summary_line(window, runner, dialogs, monkeypatch):
+    window.choose("AGENTS.md", READ)
+    files_shared(monkeypatch, file_state(READ))
     runner.replies.append(ok_results)
     window.apply()
     title, text = dialogs[-1]

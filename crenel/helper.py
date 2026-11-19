@@ -19,7 +19,7 @@ This is Crenel's security boundary, so it trusts nothing it is sent:
   Folder names, and the protected names, must be single path components.
 - **Files are read-only Markdown.** A file change (a file directly inside the
   projects folder, see `shares.py`) must name a non-hidden `*.md` file and
-  can only be hidden or read. Its source must be a regular file owned by
+  can only be hidden or read, never written. Its source must be a regular file owned by
   the caller, opened without following links like everything else.
 - **No symlink races.** Every path is opened one component at a time with
   O_NOFOLLOW, and the mount system calls are given `/proc/self/fd/N`. A link
@@ -61,7 +61,6 @@ from .shares import (
     CONFLICT,
     FILE,
     FILE_MODES,
-    FOLDER,
     HIDDEN,
     KINDS,
     MKDIR,
@@ -77,14 +76,13 @@ from .shares import (
     UNLINK,
     WRITE,
     Change,
-    FileState,
     FolderPlan,
     FolderState,
     MountEntry,
     classify,
-    classify_file,
     expected_protections,
     mounts_under,
+    needs_change,
     plan_changes,
     read_mountinfo,
     render_step,
@@ -574,7 +572,7 @@ def do_rmdir(path: str) -> str:
 # -- applying a request ------------------------------------------------------------------
 
 
-def exposure(state: FolderState | FileState) -> int:
+def exposure(state: FolderState) -> int:
     """How much the VM can do to a folder (or file) in `state`, as a rank.
 
     0 hidden, 1 read, 2 write with every protection asked for in place,
@@ -583,8 +581,6 @@ def exposure(state: FolderState | FileState) -> int:
     file is only ever hidden, read (even an out-of-date one: it is still
     read-only and was the user's) or unrecognized.
     """
-    if isinstance(state, FileState):
-        return {HIDDEN: 0, READ: 1}.get(state.mode, 4)
     if state.mode == HIDDEN:
         return 0
     if state.mode == READ:
@@ -595,9 +591,7 @@ def exposure(state: FolderState | FileState) -> int:
     return 4
 
 
-def _desired_exposure(mode: str, protected: tuple[str, ...], kind: str = FOLDER) -> int:
-    if kind == FILE:
-        return {HIDDEN: 0, READ: 1}[mode]
+def _desired_exposure(mode: str, protected: tuple[str, ...]) -> int:
     return {HIDDEN: 0, READ: 1, WRITE: 2 if protected else 3}[mode]
 
 
@@ -630,19 +624,20 @@ def _run_step(step, request: Request, uid: int, gid: int, stage: str) -> str:
     return ""
 
 
-def _state(request: Request, change: Change) -> FolderState | FileState:
-    if change.kind == FILE:
-        return classify_file(change.name, request.root, request.share, read_mountinfo())
-    return classify(change.name, request.root, request.share, read_mountinfo(), request.protected)
+def _state(request: Request, change: Change) -> FolderState:
+    return classify(
+        change.name,
+        request.root,
+        request.share,
+        read_mountinfo(),
+        request.protected,
+        kind=change.kind,
+    )
 
 
-def _matches(state: FolderState | FileState, mode: str) -> bool:
+def _matches(state: FolderState, mode: str) -> bool:
     """Whether `state` is exactly what asking for `mode` should have made."""
-    if state.mode != mode:
-        return False
-    if isinstance(state, FileState):
-        return mode != READ or state.current
-    return state.protections == expected_protections(mode, state.targets)
+    return not needs_change(state, mode)
 
 
 def _remove_mount_point(path: str) -> None:
@@ -728,7 +723,7 @@ def apply_folder(
 
     allowed = max(
         exposure(before),
-        _desired_exposure(change.mode, request.protected, change.kind),
+        _desired_exposure(change.mode, request.protected),
     )
     if exposure(after) > allowed:
         _hide_everything(request, change.name)

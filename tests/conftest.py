@@ -52,14 +52,9 @@ def conf(tmp_path_factory, projects):
     config.CONFIG_PATH = str(tmp_path_factory.mktemp("config") / "crenel-config.yaml")
     root, share = projects
 
-    def save(projects_root=root, share_dir=share, protected=(".git",), share_files=False):
+    def save(projects_root=root, share_dir=share, protected=(".git",)):
         error = config.save_settings(
-            config.Settings(
-                projects_root=projects_root,
-                share_dir=share_dir,
-                protected=protected,
-                share_projects_files=share_files,
-            )
+            config.Settings(projects_root=projects_root, share_dir=share_dir, protected=protected)
         )
         assert error is None
         return config.CONFIG_PATH

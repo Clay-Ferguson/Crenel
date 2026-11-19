@@ -14,7 +14,7 @@ It is built for running AI agents in a QEMU/KVM VM: you give the agent the proje
 - [One-time VM setup](#one-time-vm-setup)
 - [Using Crenel](#using-crenel)
 - [Protected names](#protected-names)
-- [Sharing the projects folder's files](#sharing-the-projects-folders-files)
+- [Sharing the projects folder's Markdown files](#sharing-the-projects-folders-markdown-files)
 - [Folders in use](#folders-in-use)
 - [How each share is built](#how-each-share-is-built)
 - [The password prompt](#the-password-prompt)
@@ -67,7 +67,7 @@ Projects you share while the VM is running should appear inside it straight away
 
 ## Using Crenel
 
-The window lists every folder directly inside your projects folder (it never looks deeper, and skips symlinks and dot-folders). Each row has three radio buttons: **Hidden**, **Read** and **Write**. When Crenel starts, and whenever you press **Refresh** (F5), they show what the VM can see right now.
+The window lists every folder directly inside your projects folder (it never looks deeper, and skips symlinks and dot-folders), each with a folder icon. Below them come the Markdown files directly inside it, each with a file icon (see [Sharing the projects folder's Markdown files](#sharing-the-projects-folders-markdown-files)). A folder's row has three radio buttons: **Hidden**, **Read** and **Write**. A file's row has only Hidden and Read. When Crenel starts, and whenever you press **Refresh** (F5), they show what the VM can see right now.
 
 Clicking a radio button only *marks* a change. The project's name turns **amber and bold**, and nothing happens yet. Mark as many projects as you like, then press **Apply**. Every marked change is made in one go, after one password prompt.
 
@@ -75,14 +75,14 @@ The buttons under the list:
 
 - **Refresh**: re-read what is shared. If you have marked changes, Crenel asks before throwing them away.
 - **Show Commands**: shows what Apply will do, written as the equivalent `mount` and `umount` commands, folder by folder.
-- **Hide All**: marks every project Hidden. Press Apply to carry it out. The projects folder's files are left alone: they follow [Share Projects Files](#sharing-the-projects-folders-files).
+- **Hide All**: marks every project and file Hidden. Press Apply to carry it out.
 - **Apply**: make the marked changes.
 
 Crenel draws its own title bar, in navy, so the window stands out on a dark desktop. It dims while another window has focus. Drag it to move the window, double-click it to maximize or restore, and drag any edge or corner to resize. Dialogs and messages have a close button only. Alt+Space opens GNOME's window menu, for Always on Top and the rest. The folder picker in Settings is GNOME's own and keeps the system's title bar.
 
 When Apply finishes, a summary says how it went: *All 3 changes were applied.* followed by one line per project with what the VM can see of it now (✓ ABC: now writable, protected: .git). The summary is written from the mount table read back afterwards, not from what was asked for. If anything failed, the summary is a warning instead: it opens with something like *2 of 3 changes applied.* and has a ✗ line saying why for each failure.
 
-The status bar counts the projects, how many are shared (writable and read-only), and how many changes are still waiting for Apply. After an Apply it also repeats the summary's first line, until the next Apply or Refresh. Hover over a project's name to see its current state and what Apply will change it to.
+The status bar counts the projects and Markdown files, how many are shared (writable and read-only), and how many changes are still waiting for Apply. After an Apply it also repeats the summary's first line, until the next Apply or Refresh. Hover over a project's name to see its current state and what Apply will change it to.
 
 Changing an already-shared project, say from Write to Read, takes the share down and puts it back up the new way. A read-only setting changed in place would only reach the host's side and never the VM's (see [How each share is built](#how-each-share-is-built)). So the project is briefly unmounted, which needs it not to be in use (see [Folders in use](#folders-in-use)).
 
@@ -116,21 +116,19 @@ A `.git` that is a file (a worktree or a submodule) is protected the same way, s
 
 Anything in a project that *runs on the host* is worth considering: `.envrc` (direnv runs it when you `cd` in), `.vscode` (its `tasks.json` and settings), `Makefile`, `package.json` (its scripts). The agent can then still read them but not change them.
 
-## Sharing the projects folder's files
+## Sharing the projects folder's Markdown files
 
 Coding agents look for instructions in the folders *above* the project they are working in, such as an `AGENTS.md` that applies to all your projects. The VM sees only the share folder, so a file sitting directly in your projects folder is normally invisible to it.
 
-Turn on **Share Projects Files** in Options ▸ Settings, and every Markdown file (`*.md`) directly inside the projects folder is shared too, **read-only**, beside the projects. Your `~/projects/AGENTS.md` then shows up in the VM one level above each project, where the agent looks:
+So every Markdown file (`*.md`) directly inside the projects folder gets a row of its own, below the projects. Set it to **Read** and press Apply, and the file is shared beside the projects. Your `~/projects/AGENTS.md` then shows up in the VM one level above each project, where the agent looks:
 
 ```
 ~/projects/AGENTS.md   ── mount --bind, read-only ──▶   ~/vm-share/AGENTS.md
 ```
 
-Only files are shared, never the folders: each project is still Hidden, Read or Write on its own. Hidden files (names starting with `.`) and symlinks are skipped, and so is anything that is not Markdown. The VM can read the files but not change, rename or delete them.
+A file can only be **Hidden** or **Read**, never Write: the VM can read it but not change, rename or delete it. Each file is chosen on its own, and a new file starts out Hidden. Hidden files (names starting with `.`) and symlinks are not listed, and neither is anything that is not Markdown. Hide All and Apply treat the files just like the projects.
 
-The files have no rows in the list. With the setting on, any file that is not shared yet (a new one, or all of them right after you turn the setting on) counts as a change waiting for Apply, and so does a shared file that is gone. Turn the setting off and Apply removes them all from the VM. The status bar counts the shared files, and the line above the list names them.
-
-**Edits.** A bind mount shares the file itself, not its name. An edit saved *into* the file shows up in the VM straight away. But many editors save by writing a new file and renaming it over the old one, and then the VM keeps seeing the old text. Press **Refresh** after such a save: the file shows as a change waiting for Apply (Show Commands calls it *out of date*), and Apply shares the new one.
+**Edits.** A bind mount shares the file itself, not its name. An edit saved *into* the file shows up in the VM straight away. But many editors save by writing a new file and renaming it over the old one, and then the VM keeps seeing the old text. Press **Refresh** after such a save: the file's row shows as a change waiting for Apply (its tooltip and Show Commands call it *out of date*), and Apply shares the new one.
 
 ## Folders in use
 
@@ -174,8 +172,7 @@ A row marked **⚠** in red has something in its place in the share folder that 
 
 Options ▸ Settings:
 
-- **Projects folder**: the folder whose subfolders are listed.
-- **Share Projects Files**: also share the Markdown files directly inside the projects folder, read-only. Off unless you turn it on. See [Sharing the projects folder's files](#sharing-the-projects-folders-files).
+- **Projects folder**: the folder whose subfolders and Markdown files are listed.
 - **VM share folder**: the folder the VM's virtiofs share points at. Crenel creates it if it is missing. It must not be inside the projects folder, or contain it, and must hold nothing but empty folders, empty files and Crenel's own shares (see [How it works](#how-it-works)).
 - **Read-only in projects shared Write**: the protected names, one per line. See [Protected names](#protected-names).
 

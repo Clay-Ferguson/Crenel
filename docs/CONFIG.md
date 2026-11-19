@@ -5,7 +5,6 @@ Crenel keeps its settings in `~/.config/crenel/crenel-config.yaml`. It is create
 ```yaml
 folders:
   projects_root: "/home/you/projects"
-  share_projects_files: false
   share_dir: "~/vm-share"
 
 protection:
@@ -15,10 +14,9 @@ protection:
 
 ## Keys
 
-- `folders.projects_root`: the folder whose subfolders Crenel lists. `~` is expanded, and a symlinked path is resolved to the real folder. Empty on first run, which opens the settings dialog.
-- `folders.share_projects_files`: `true` to also share the Markdown files (`*.md`) directly inside `projects_root` with the VM, read-only. Folders are never included, and hidden files and symlinks are skipped. Defaults to `false`. Only a real YAML boolean counts. See [Sharing the projects folder's files](USER_GUIDE.md#sharing-the-projects-folders-files).
+- `folders.projects_root`: the folder whose subfolders (and Markdown files) Crenel lists. `~` is expanded, and a symlinked path is resolved to the real folder. Empty on first run, which opens the settings dialog.
 - `folders.share_dir`: the folder the VM's virtiofs share points at (see the [User Guide](USER_GUIDE.md#one-time-vm-setup)). Defaults to `~/vm-share`, and is created if missing. It must not be inside `projects_root`, or contain it, and must hold nothing but empty folders, empty files and Crenel's own shares.
-- `protection.protected`: a list of folder or file names directly inside each project, made read-only inside the VM for projects shared Write. Defaults to `[".git"]`; `[]` protects nothing. An item starting with `#` is a comment, kept but ignored (the settings dialog shows it as a commented line). A name with a `/` in it (a path), `.` or `..` is dropped. See [Protected names](USER_GUIDE.md#protected-names). Older versions had `protection.protect_git: true` or `false` instead: it is read as `[".git"]` or `[]`, and replaced by `protected` on the next save.
+- `protection.protected`: a list of folder or file names directly inside each project, made read-only inside the VM for projects shared Write. Defaults to `[".git"]`; `[]` protects nothing. An item starting with `#` is a comment, kept but ignored (the settings dialog shows it as a commented line). A name with a `/` in it (a path), `.` or `..` is dropped. See [Protected names](USER_GUIDE.md#protected-names).
 
 A key holding the wrong type is ignored and its default used instead. A file that cannot be parsed at all gives the defaults, and the settings dialog says so before you save over it.
 

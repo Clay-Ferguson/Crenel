@@ -33,7 +33,6 @@ from crenel.shares import (
     HIDDEN,
     READ,
     WRITE,
-    FileState,
     FolderState,
     MountEntry,
 )
@@ -142,11 +141,14 @@ def test_file_changes(folders):
 
 
 def test_file_exposure_ranks():
-    assert exposure(FileState("a.md", HIDDEN)) == 0
-    assert exposure(FileState("a.md", READ)) == 1
-    assert exposure(FileState("a.md", READ, current=False)) == 1
-    assert exposure(FileState("a.md", CONFLICT)) == 4
-    assert _desired_exposure(READ, (), FILE) == 1 and _desired_exposure(HIDDEN, (), FILE) == 0
+    def state(mode, current=True):
+        return FolderState("a.md", mode, kind=FILE, current=current)
+
+    assert exposure(state(HIDDEN)) == 0
+    assert exposure(state(READ)) == 1
+    assert exposure(state(READ, current=False)) == 1
+    assert exposure(state(CONFLICT)) == 4
+    assert _desired_exposure(READ, ()) == 1 and _desired_exposure(HIDDEN, ()) == 0
 
 
 def test_the_protected_names(folders):
