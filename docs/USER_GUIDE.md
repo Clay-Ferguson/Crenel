@@ -14,6 +14,7 @@ It is built for running AI agents in a QEMU/KVM VM: you give the agent the proje
 - [One-time VM setup](#one-time-vm-setup)
 - [Using Crenel](#using-crenel)
 - [Protected names](#protected-names)
+- [Sharing the projects folder's files](#sharing-the-projects-folders-files)
 - [Folders in use](#folders-in-use)
 - [How each share is built](#how-each-share-is-built)
 - [The password prompt](#the-password-prompt)
@@ -33,7 +34,7 @@ A bind mount makes the same folder appear in a second place. It is not a copy an
 
 Hiding a project unmounts it and removes its empty folder from the share folder.
 
-The VM sees **everything** in the share folder, not only the projects Crenel shares, and can change whatever is not shared Read. So the share folder must hold nothing but Crenel's shares and empty folders (an empty folder is a share no longer in use, as after a reboot, and shows the VM only its name). Crenel refuses a share folder with anything else in it when you save the settings. If something appears in it later, the status bar shows a **⚠ stray item** count, and Apply refuses to share any project until it is moved out. Hiding projects still works.
+The VM sees **everything** in the share folder, not only the projects Crenel shares, and can change whatever is not shared Read. So the share folder must hold nothing but Crenel's shares, empty folders and empty files (an empty folder or file is a share no longer in use, as after a reboot, and shows the VM only its name). Crenel refuses a share folder with anything else in it when you save the settings. If something appears in it later, the status bar shows a **⚠ stray item** count, and Apply refuses to share any project until it is moved out. Hiding projects still works.
 
 Bind mounts do not survive a reboot, so **every project is Hidden after the host restarts** until you share it again. That is the safe default.
 
@@ -74,7 +75,7 @@ The buttons under the list:
 
 - **Refresh**: re-read what is shared. If you have marked changes, Crenel asks before throwing them away.
 - **Show Commands**: shows what Apply will do, written as the equivalent `mount` and `umount` commands, folder by folder.
-- **Hide All**: marks every project Hidden. Press Apply to carry it out.
+- **Hide All**: marks every project Hidden. Press Apply to carry it out. The projects folder's files are left alone: they follow [Share Projects Files](#sharing-the-projects-folders-files).
 - **Apply**: make the marked changes.
 
 Crenel draws its own title bar, in navy, so the window stands out on a dark desktop. It dims while another window has focus. Drag it to move the window, double-click it to maximize or restore, and drag any edge or corner to resize. Dialogs and messages have a close button only. Alt+Space opens GNOME's window menu, for Always on Top and the rest. The folder picker in Settings is GNOME's own and keeps the system's title bar.
@@ -114,6 +115,22 @@ A `.git` that is a file (a worktree or a submodule) is protected the same way, s
 ### Other names worth listing
 
 Anything in a project that *runs on the host* is worth considering: `.envrc` (direnv runs it when you `cd` in), `.vscode` (its `tasks.json` and settings), `Makefile`, `package.json` (its scripts). The agent can then still read them but not change them.
+
+## Sharing the projects folder's files
+
+Coding agents look for instructions in the folders *above* the project they are working in, such as an `AGENTS.md` that applies to all your projects. The VM sees only the share folder, so a file sitting directly in your projects folder is normally invisible to it.
+
+Turn on **Share Projects Files** in Options ▸ Settings, and every Markdown file (`*.md`) directly inside the projects folder is shared too, **read-only**, beside the projects. Your `~/projects/AGENTS.md` then shows up in the VM one level above each project, where the agent looks:
+
+```
+~/projects/AGENTS.md   ── mount --bind, read-only ──▶   ~/vm-share/AGENTS.md
+```
+
+Only files are shared, never the folders: each project is still Hidden, Read or Write on its own. Hidden files (names starting with `.`) and symlinks are skipped, and so is anything that is not Markdown. The VM can read the files but not change, rename or delete them.
+
+The files have no rows in the list. With the setting on, any file that is not shared yet (a new one, or all of them right after you turn the setting on) counts as a change waiting for Apply, and so does a shared file that is gone. Turn the setting off and Apply removes them all from the VM. The status bar counts the shared files, and the line above the list names them.
+
+**Edits.** A bind mount shares the file itself, not its name. An edit saved *into* the file shows up in the VM straight away. But many editors save by writing a new file and renaming it over the old one, and then the VM keeps seeing the old text. Press **Refresh** after such a save: the file shows as a change waiting for Apply (Show Commands calls it *out of date*), and Apply shares the new one.
 
 ## Folders in use
 
@@ -158,7 +175,8 @@ A row marked **⚠** in red has something in its place in the share folder that 
 Options ▸ Settings:
 
 - **Projects folder**: the folder whose subfolders are listed.
-- **VM share folder**: the folder the VM's virtiofs share points at. Crenel creates it if it is missing. It must not be inside the projects folder, or contain it, and must hold nothing but empty folders and Crenel's own shares (see [How it works](#how-it-works)).
+- **Share Projects Files**: also share the Markdown files directly inside the projects folder, read-only. Off unless you turn it on. See [Sharing the projects folder's files](#sharing-the-projects-folders-files).
+- **VM share folder**: the folder the VM's virtiofs share points at. Crenel creates it if it is missing. It must not be inside the projects folder, or contain it, and must hold nothing but empty folders, empty files and Crenel's own shares (see [How it works](#how-it-works)).
 - **Read-only in projects shared Write**: the protected names, one per line. See [Protected names](#protected-names).
 
 The settings are kept in a YAML file. See [CONFIG.md](CONFIG.md).

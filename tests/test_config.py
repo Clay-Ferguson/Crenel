@@ -33,6 +33,16 @@ def test_round_trip(conf, projects):
         assert yaml.safe_load(handle)["protection"]["protected"] == list(names)
 
 
+def test_share_projects_files(conf):
+    assert load_settings()[0].share_projects_files is False
+    assert save_settings(Settings("~/x", "~/y", (), share_projects_files=True)) is None
+    assert load_settings()[0].share_projects_files is True
+    with open(config.CONFIG_PATH) as handle:
+        assert yaml.safe_load(handle)["folders"]["share_projects_files"] is True
+    write('folders:\n  share_projects_files: "yes"\n')  # only a real boolean counts
+    assert load_settings()[0].share_projects_files is False
+
+
 def test_missing_and_broken_files_fall_back_to_defaults(conf):
     os.unlink(config.CONFIG_PATH)
     assert load_settings() == (Settings(), None)

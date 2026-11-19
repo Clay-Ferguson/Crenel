@@ -31,6 +31,15 @@ So a share is assembled complete (made private, read-only, protected) in
 into the share folder, which gives it a link group of its own, and the VM's
 copy arrives finished. A change to an existing share is a fresh re-share,
 never an in-place remount, because a remount would never reach the VM.
+
+**Files.** With the *Share Projects Files* setting on, the Markdown files
+directly inside the projects folder (an `AGENTS.md` that agents look for in
+a project's parent folder) are shared too, each read-only and built the same
+way, so the VM sees `<share folder>/AGENTS.md` beside the projects. A file
+bind mount holds on to the file itself (its inode), so a host editor that
+saves by writing a new file and renaming it over the old one leaves the VM
+with the old text. `classify_file` notices (`FileState.current`), and the
+next Apply shares the new file.
 """
 
 from __future__ import annotations
@@ -48,6 +57,17 @@ HIDDEN = "hidden"
 READ = "read"
 WRITE = "write"
 MODES = (HIDDEN, READ, WRITE)
+# The only modes a file can have: a shared file is never writable.
+FILE_MODES = (HIDDEN, READ)
+
+# What a change is to: a project folder (a row in the window), or one of the
+# Markdown files directly inside the projects folder.
+FOLDER = "folder"
+FILE = "file"
+KINDS = (FOLDER, FILE)
+
+# The files shared with Share Projects Files on: Markdown only.
+FILE_SUFFIX = ".md"
 
 # Not a mode anyone can choose. It is what a folder is when something is
 # mounted at its place in the share folder that Crenel would not have put
@@ -152,15 +172,34 @@ def list_projects(root: str) -> list[str]:
     return sorted(names, key=str.casefold)
 
 
+def list_project_files(root: str) -> list[str]:
+    """The files directly under `root` that Share Projects Files shares, sorted.
+
+    Regular files only, named `*.md` (any case) and not hidden: a symlink is
+    left out, since its target could be anything, and so is a dotfile. A
+    missing or unreadable root lists nothing.
+    """
+    try:
+        with os.scandir(root) as listing:
+            names = [
+                entry.name
+                for entry in listing
+                if entry.is_file(follow_symlinks=False) and shareable_file_name(entry.name)
+            ]
+    except OSError:
+        return []
+    return sorted(names, key=str.casefold)
+
+
 def stray_entries(share: str, entries: Sequence[MountEntry]) -> list[str]:
     """What is in the share folder that Crenel did not put there, sorted.
 
     The VM sees everything in the share folder, and can write to whatever is
     not a read-only share. So the only things expected in it are Crenel's
-    mounts and empty folders (mount points no longer in use, as after a
-    reboot, which show the VM a name and nothing else). Anything else (a
-    file, a symlink, a folder with something in it) is listed. A missing or
-    unreadable share folder lists nothing.
+    mounts, empty folders and empty files (mount points no longer in use, as
+    after a reboot, which show the VM a name and nothing else). Anything else
+    (a file with something in it, a symlink, a folder with something in it)
+    is listed. A missing or unreadable share folder lists nothing.
     """
     try:
         names = os.listdir(share)
@@ -171,13 +210,18 @@ def stray_entries(share: str, entries: Sequence[MountEntry]) -> list[str]:
         path = os.path.join(share, name)
         if mounts_under(entries, path):
             continue
-        mode = _lstat_mode(path)
-        if mode is not None and stat.S_ISDIR(mode):
+        try:
+            info = os.lstat(path)
+        except OSError:
+            info = None
+        if info is not None and stat.S_ISDIR(info.st_mode):
             try:
                 if not os.listdir(path):
                     continue
             except OSError:
                 pass
+        if info is not None and stat.S_ISREG(info.st_mode) and info.st_size == 0:
+            continue
         stray.append(name)
     return sorted(stray, key=str.casefold)
 
@@ -193,6 +237,17 @@ def valid_name(name: object) -> bool:
         and "/" not in name
         and "\0" not in name
         and name not in (".", "..")
+    )
+
+
+def shareable_file_name(name: object) -> bool:
+    """Whether `name` is a file Share Projects Files may share: a plain,
+    non-hidden name ending in `.md` (any case)."""
+    return (
+        valid_name(name)
+        and isinstance(name, str)
+        and not name.startswith(".")
+        and name.casefold().endswith(FILE_SUFFIX)
     )
 
 
@@ -299,23 +354,103 @@ def classify(
     return FolderState(name, mode, tuple(sorted(protections)), found_targets)
 
 
+def _mounted_names(share: str, entries: Iterable[MountEntry]) -> set[str]:
+    """The names directly under `share` that something is mounted at or below."""
+    prefix = share.rstrip("/") + "/"
+    return {
+        entry.mount_point[len(prefix):].split("/")[0]
+        for entry in entries
+        if entry.mount_point.startswith(prefix)
+    }
+
+
+def _is_file(path: str) -> bool:
+    mode = _lstat_mode(path)
+    return mode is not None and stat.S_ISREG(mode)
+
+
 def read_states(root: str, share: str, protected: Sequence[str]) -> dict[str, FolderState]:
     """Every project's state, by name.
 
     The names are the folders under `root` plus anything mounted directly
-    under `share`. A project that has been renamed or deleted while it was
-    shared then still shows up, as a CONFLICT that can be set to Hidden.
+    under `share`, except file shares (see `read_file_states`). A project
+    that has been renamed or deleted while it was shared then still shows
+    up, as a CONFLICT that can be set to Hidden.
     """
     entries = read_mountinfo()
     names = set(list_projects(root))
-    prefix = share.rstrip("/") + "/"
-    for entry in entries:
-        if entry.mount_point.startswith(prefix):
-            names.add(entry.mount_point[len(prefix):].split("/")[0])
+    for name in _mounted_names(share, entries):
+        if not _is_file(os.path.join(share, name)):
+            names.add(name)
     return {
         name: classify(name, root, share, entries, protected)
         for name in sorted(names, key=str.casefold)
     }
+
+
+# -- one file's state --------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class FileState:
+    """What the VM can see of one file directly inside the projects folder.
+
+    `mode` is HIDDEN, READ or CONFLICT. `current` says whether a READ share
+    is still the file in the projects folder: it is not once that file has
+    been replaced (saved by writing a new file and renaming it) or deleted,
+    and the VM then still sees the old one.
+    """
+
+    name: str
+    mode: str
+    current: bool = True
+    detail: str = ""
+
+
+def classify_file(
+    name: str,
+    root: str,
+    share: str,
+    entries: Sequence[MountEntry],
+    *,
+    is_same_dir: Callable[[str, str], bool] = same_dir,
+) -> FileState:
+    """Work out file `name`'s state from the mounts at `<share>/<name>`."""
+    destination = os.path.join(share, name)
+    source = os.path.join(root, name)
+    under = mounts_under(entries, destination)
+    if not under:
+        return FileState(name, HIDDEN)
+    if len(under) > 1 or under[0].mount_point != destination:
+        return FileState(name, CONFLICT, detail=f"Unexpected mounts at {destination}.")
+    if not under[0].read_only:
+        return FileState(name, CONFLICT, detail=f"{destination} is mounted read-write.")
+    return FileState(name, READ, current=is_same_dir(destination, source))
+
+
+def read_file_states(root: str, share: str) -> dict[str, FileState]:
+    """Every shareable file's state, by name.
+
+    The names are the files `list_project_files` finds in `root` plus every
+    file mounted directly under `share`, so one that has been deleted or
+    renamed while it was shared still shows up, to be hidden.
+    """
+    entries = read_mountinfo()
+    names = set(list_project_files(root))
+    for name in _mounted_names(share, entries):
+        if _is_file(os.path.join(share, name)):
+            names.add(name)
+    return {
+        name: classify_file(name, root, share, entries)
+        for name in sorted(names, key=str.casefold)
+    }
+
+
+def needs_file_change(state: FileState, desired: str) -> bool:
+    """Whether Apply has anything to do to make file `state` match `desired`."""
+    if state.mode != desired:
+        return True
+    return desired == READ and not state.current
 
 
 def expected_protections(mode: str, targets: Sequence[str]) -> tuple[str, ...]:
@@ -339,11 +474,14 @@ BIND = "bind"
 PRIVATE = "private"
 READONLY = "readonly"
 MOVE = "move"
+BIND_FILE = "bind-file"
+MKFILE = "mkfile"
+UNLINK = "unlink"
 
 
 @dataclass(frozen=True)
 class Step:
-    """One thing the helper does. `source` is used by BIND and MOVE."""
+    """One thing the helper does. `source` is used by BIND, BIND_FILE and MOVE."""
 
     kind: str
     path: str
@@ -352,10 +490,11 @@ class Step:
 
 @dataclass(frozen=True)
 class Change:
-    """One folder Apply is asked to put into `mode`."""
+    """One folder (or, with `kind` FILE, one file) Apply is asked to put into `mode`."""
 
     name: str
     mode: str
+    kind: str = FOLDER
 
 
 @dataclass
@@ -423,16 +562,55 @@ def plan_folder(
     return plan
 
 
+def plan_file(
+    change: Change,
+    root: str,
+    share: str,
+    entries: Sequence[MountEntry],
+    *,
+    stage: str = STAGE_DIR,
+) -> FolderPlan:
+    """The steps that take one file from what `entries` says to `change.mode`.
+
+    The same shape as `plan_folder`: whatever is mounted there comes off,
+    Hidden removes the empty mount point, and Read builds a read-only bind of
+    the file in the scratch spot and moves it in.
+    """
+    destination = os.path.join(share, change.name)
+    staged = os.path.join(stage, change.name)
+    plan = FolderPlan(change)
+    steps = plan.steps
+    steps.extend(
+        Step(UMOUNT, e.mount_point) for e in _deepest_first(mounts_under(entries, destination))
+    )
+    if change.mode == HIDDEN:
+        steps.append(Step(UNLINK, destination))
+        return plan
+    steps.append(Step(BIND_FILE, staged, os.path.join(root, change.name)))
+    steps.append(Step(PRIVATE, staged))
+    steps.append(Step(READONLY, staged))
+    steps.append(Step(MKFILE, destination))
+    steps.append(Step(MOVE, destination, staged))
+    return plan
+
+
 def plan_changes(
     changes: Iterable[Change],
     root: str,
     share: str,
     protected: Sequence[str],
     entries: Sequence[MountEntry],
+    *,
+    stage: str = STAGE_DIR,
     **probes,
 ) -> list[FolderPlan]:
-    """`plan_folder` for every change, in the order given."""
-    return [plan_folder(c, root, share, protected, entries, **probes) for c in changes]
+    """`plan_folder` (or `plan_file`) for every change, in the order given."""
+    return [
+        plan_file(c, root, share, entries, stage=stage)
+        if c.kind == FILE
+        else plan_folder(c, root, share, protected, entries, stage=stage, **probes)
+        for c in changes
+    ]
 
 
 def stage_setup_commands(stage: str = STAGE_DIR) -> list[str]:
@@ -464,8 +642,12 @@ def render_step(step: Step, force: bool = False) -> str:
         return f"rmdir {path}"
     if step.kind == MKDIR:
         return f"mkdir {path}"
-    if step.kind == BIND:
+    if step.kind in (BIND, BIND_FILE):
         return f"mount --bind {shlex.quote(step.source)} {path}"
+    if step.kind == MKFILE:
+        return f"touch {path}"
+    if step.kind == UNLINK:
+        return f"rm {path}"
     if step.kind == PRIVATE:
         return f"mount --make-private {path}"
     if step.kind == READONLY:

@@ -27,19 +27,28 @@ from crenel.helper import (
     valid_name,
     validate_request,
 )
-from crenel.shares import CONFLICT, HIDDEN, READ, WRITE, FolderState, MountEntry
+from crenel.shares import (
+    CONFLICT,
+    FILE,
+    HIDDEN,
+    READ,
+    WRITE,
+    FileState,
+    FolderState,
+    MountEntry,
+)
 
 UID = os.getuid()
 
 
 def request(root, share, **overrides):
     data = {
-        "protocol": 2,
+        "protocol": 3,
         "root": root,
         "share": share,
         "protected": [".git"],
         "force": False,
-        "changes": [{"name": "ABC", "mode": "write"}],
+        "changes": [{"name": "ABC", "mode": "write", "kind": "folder"}],
     }
     data.update(overrides)
     return data
@@ -96,13 +105,48 @@ def test_refuses_overlapping_folders(folders):
 
 def test_refuses_bad_changes(folders):
     root, share = folders
-    assert "folder name" in refused(request(root, share, changes=[{"name": "..", "mode": "read"}]))
-    assert "one of" in refused(request(root, share, changes=[{"name": "ABC", "mode": "admin"}]))
-    twice = [{"name": "ABC", "mode": "read"}, {"name": "ABC", "mode": "write"}]
+    def change(name, mode, kind="folder"):
+        return {"name": name, "mode": mode, "kind": kind}
+
+    assert "folder name" in refused(request(root, share, changes=[change("..", "read")]))
+    assert "one of" in refused(request(root, share, changes=[change("ABC", "admin")]))
+    assert "one of" in refused(request(root, share, changes=[change("ABC", "read", "disk")]))
+    assert "one of" in refused(request(root, share, changes=[{"name": "ABC", "mode": "read"}]))
+    twice = [change("ABC", "read"), change("ABC", "write")]
     assert "twice" in refused(request(root, share, changes=twice))
     assert "protocol" in refused(request(root, share, protocol=99))
     assert "true or false" in refused(request(root, share, force="yes"))
     assert "JSON object" in refused([])
+
+
+def test_file_changes(folders):
+    root, share = folders
+
+    def files(*items):
+        return request(root, share, changes=[
+            {"name": name, "mode": mode, "kind": kind} for name, mode, kind in items
+        ])
+
+    parsed = validate_request(files(("AGENTS.md", "read", "file"), ("ABC", "write", "folder")), UID)
+    assert [(c.name, c.mode, c.kind) for c in parsed.changes] == [
+        ("AGENTS.md", "read", "file"), ("ABC", "write", "folder"),
+    ]
+    assert validate_request(files(("a.MD", "hidden", "file")), UID).changes[0].mode == "hidden"
+    for bad in ("notes.txt", ".hidden.md", ".md"):
+        assert "Markdown" in refused(files((bad, "read", "file")))
+    assert "file name" in refused(files(("a/b.md", "read", "file")))
+    assert "only be hidden or read" in refused(files(("AGENTS.md", "write", "file")))
+    assert "twice" in refused(files(("x.md", "read", "file"), ("x.md", "read", "folder")))
+    many = [(f"n{i}.md", "read", "file") for i in range(helper.MAX_FILES + 1)]
+    assert "At most" in refused(files(*many))
+
+
+def test_file_exposure_ranks():
+    assert exposure(FileState("a.md", HIDDEN)) == 0
+    assert exposure(FileState("a.md", READ)) == 1
+    assert exposure(FileState("a.md", READ, current=False)) == 1
+    assert exposure(FileState("a.md", CONFLICT)) == 4
+    assert _desired_exposure(READ, (), FILE) == 1 and _desired_exposure(HIDDEN, (), FILE) == 0
 
 
 def test_the_protected_names(folders):

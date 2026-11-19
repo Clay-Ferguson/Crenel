@@ -24,7 +24,7 @@ from crenel.protocol import HelperReply  # noqa: E402
 
 @pytest.fixture
 def projects(tmp_path):
-    """A projects folder with three projects (one a git repo), and a share folder.
+    """A projects folder with three projects (one a git repo), an AGENTS.md, and a share folder.
 
     Returns (root, share) as real paths. The share folder does not exist
     yet: Crenel creates it.
@@ -36,6 +36,7 @@ def projects(tmp_path):
     (root / "ABC" / ".git" / "config").write_text("[core]\n")
     (root / ".hidden").mkdir()
     (root / "notes.txt").write_text("not a project")
+    (root / "AGENTS.md").write_text("# Notes to agents\n")
     os.symlink(root / "DEF", root / "link-to-DEF")
     return os.path.realpath(root), os.path.realpath(tmp_path / "vm-share")
 
@@ -51,9 +52,14 @@ def conf(tmp_path_factory, projects):
     config.CONFIG_PATH = str(tmp_path_factory.mktemp("config") / "crenel-config.yaml")
     root, share = projects
 
-    def save(projects_root=root, share_dir=share, protected=(".git",)):
+    def save(projects_root=root, share_dir=share, protected=(".git",), share_files=False):
         error = config.save_settings(
-            config.Settings(projects_root=projects_root, share_dir=share_dir, protected=protected)
+            config.Settings(
+                projects_root=projects_root,
+                share_dir=share_dir,
+                protected=protected,
+                share_projects_files=share_files,
+            )
         )
         assert error is None
         return config.CONFIG_PATH
@@ -136,8 +142,8 @@ def ok_results(request: dict) -> HelperReply:
     """A reply saying every change in `request` worked."""
     return HelperReply(
         results=tuple(
-            {"name": c["name"], "mode": c["mode"], "ok": True, "busy": False,
-             "error": "", "warning": ""}
+            {"name": c["name"], "mode": c["mode"], "kind": c["kind"], "ok": True,
+             "busy": False, "error": "", "warning": ""}
             for c in request["changes"]
         )
     )

@@ -9,7 +9,16 @@ from windowchrome import WindowFrame
 
 from crenel import window as window_module
 from crenel.protocol import HelperReply
-from crenel.shares import CONFLICT, HIDDEN, READ, WRITE, FolderState
+from crenel.shares import (
+    CONFLICT,
+    FILE,
+    HIDDEN,
+    READ,
+    WRITE,
+    Change,
+    FileState,
+    FolderState,
+)
 
 from conftest import ok_results
 
@@ -42,7 +51,10 @@ def test_apply_sends_one_request_and_refreshes(window, runner):
     window.apply()
     assert len(runner.requests) == 1
     changes = runner.requests[0]["changes"]
-    assert changes == [{"name": "ABC", "mode": "write"}, {"name": "DEF", "mode": "read"}]
+    assert changes == [
+        {"name": "ABC", "mode": "write", "kind": "folder"},
+        {"name": "DEF", "mode": "read", "kind": "folder"},
+    ]
     assert runner.requests[0]["force"] is False
     # The fake changed nothing, so the refresh shows the real state again.
     assert window.pending() == []
@@ -80,11 +92,11 @@ def test_busy_folders_offer_a_forced_retry(window, runner, dialogs):
     window.apply()
     # Only busy folders: no summary, straight to the question. The forced
     # retry then gets its own summary.
-    assert [title for title, _ in dialogs] == ["Crenel — folders in use", "Crenel — Applied"]
+    assert [title for title, _ in dialogs] == ["Crenel — in use", "Crenel — Applied"]
     assert "in use" in dialogs[0][1]
     assert len(runner.requests) == 2
     assert runner.requests[1]["force"] is True
-    assert runner.requests[1]["changes"] == [{"name": "ABC", "mode": "read"}]
+    assert runner.requests[1]["changes"] == [{"name": "ABC", "mode": "read", "kind": "folder"}]
 
 
 def applied_states(monkeypatch, states):
@@ -279,3 +291,68 @@ def test_stray_items_block_sharing_but_not_hiding(window, runner, dialogs, monke
     window.apply()
     assert [c["name"] for c in runner.requests[-1]["changes"]] == ["ABC"]
 
+
+
+# -- the projects folder's Markdown files ---------------------------------------------
+
+
+def files_shared(monkeypatch, files):
+    """Make every refresh see `files` (name: FileState), as if they were mounted."""
+    monkeypatch.setattr(window_module, "read_file_states", lambda root, share: files)
+
+
+def test_files_stay_hidden_with_the_setting_off(window):
+    assert window.file_state("AGENTS.md").mode == HIDDEN
+    assert window.pending() == []
+    assert "file" not in window.status_text()
+    assert "Shared files" not in window.paths_label.text()
+
+
+def test_the_setting_shares_the_files_on_apply(window, conf, runner, dialogs):
+    conf(share_files=True)
+    window.refresh(ask=False)
+    assert window.pending() == [Change("AGENTS.md", READ, FILE)]
+    assert window.marked() == []
+    assert window.apply_button.isEnabled()
+    assert "0 files shared" in window.status_text()
+    assert "Shared files (read-only): none yet" in window.paths_label.text()
+    assert "# file AGENTS.md: hidden → read-only" in window.commands_text()
+    assert window.refresh() is True and dialogs == []  # nothing of yours to discard
+    runner.replies.append(ok_results)
+    window.apply()
+    assert runner.requests[0]["changes"] == [{"name": "AGENTS.md", "mode": "read", "kind": "file"}]
+
+
+def test_shared_files_are_shown_and_hidden_when_the_setting_is_off(window, monkeypatch):
+    files_shared(monkeypatch, {"AGENTS.md": FileState("AGENTS.md", READ)})
+    window.refresh(ask=False)
+    assert "1 file shared" in window.status_text()
+    assert "Shared files (read-only): AGENTS.md" in window.paths_label.text()
+    assert window.pending() == [Change("AGENTS.md", HIDDEN, FILE)]  # the setting is off
+
+
+def test_an_out_of_date_file_is_a_pending_change(window, conf, monkeypatch):
+    conf(share_files=True)
+    files_shared(monkeypatch, {"AGENTS.md": FileState("AGENTS.md", READ, current=False)})
+    window.refresh(ask=False)
+    assert window.pending() == [Change("AGENTS.md", READ, FILE)]
+    assert "# file AGENTS.md: out of date → read-only" in window.commands_text()
+
+
+def test_hide_all_leaves_the_files_to_the_setting(window, conf, monkeypatch):
+    conf(share_files=True)
+    files_shared(monkeypatch, {"AGENTS.md": FileState("AGENTS.md", READ)})
+    window.refresh(ask=False)
+    window.choose("DEF", READ)
+    window.hide_all()
+    assert window.pending() == []
+
+
+def test_a_file_s_summary_line(window, conf, runner, dialogs, monkeypatch):
+    conf(share_files=True)
+    window.refresh(ask=False)
+    files_shared(monkeypatch, {"AGENTS.md": FileState("AGENTS.md", READ)})
+    runner.replies.append(ok_results)
+    window.apply()
+    title, text = dialogs[-1]
+    assert title == "Crenel — Applied" and "✓  AGENTS.md: now read-only" in text

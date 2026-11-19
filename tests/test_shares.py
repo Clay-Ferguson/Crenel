@@ -6,27 +6,38 @@ import os
 
 from crenel.shares import (
     BIND,
+    BIND_FILE,
     CONFLICT,
+    FILE,
     HIDDEN,
     MKDIR,
+    MKFILE,
     MOVE,
     PRIVATE,
     READ,
     READONLY,
     RMDIR,
     UMOUNT,
+    UNLINK,
     WRITE,
     Change,
+    FileState,
     FolderState,
     MountEntry,
     Step,
     classify,
+    classify_file,
     find_targets,
+    list_project_files,
     list_projects,
     needs_change,
+    needs_file_change,
     parse_mountinfo,
+    plan_changes,
+    plan_file,
     plan_folder,
     render_step,
+    shareable_file_name,
     stray_entries,
     unescape,
 )
@@ -237,7 +248,7 @@ def test_render_step_quotes_paths():
     assert render_step(Step(PRIVATE, "/run/st/x")) == "mount --make-private /run/st/x"
 
 
-def test_stray_entries_allows_only_mounts_and_empty_folders(tmp_path):
+def test_stray_entries_allows_only_mounts_and_empty_folders_and_files(tmp_path):
     share = tmp_path / "vm-share"
     (share / "unused").mkdir(parents=True)          # an empty mount point: fine
     (share / "ABC").mkdir()
@@ -246,8 +257,96 @@ def test_stray_entries_allows_only_mounts_and_empty_folders(tmp_path):
     (share / "full" / "file").write_text("x")      # a folder with something in it
     (share / "notes.txt").write_text("x")
     (share / ".hidden").write_text("x")
+    (share / "OLD.md").write_text("")             # an empty file mount point: fine
     os.symlink(share / "unused", share / "link")    # a link, even to an empty folder
     entries = [entry(str(share / "ABC"))]
     assert stray_entries(str(share), entries) == [".hidden", "full", "link", "notes.txt"]
     assert stray_entries(str(tmp_path / "missing"), []) == []
 
+
+
+# -- the projects folder's Markdown files ---------------------------------------------
+
+
+def test_shareable_file_names():
+    for good in ("AGENTS.md", "notes.MD", "My Notes.Md", "\udcff.md"):
+        assert shareable_file_name(good), good
+    for bad in ("notes.txt", ".md", ".hidden.md", "a/b.md", "md", "", "x.md\0", None, 7):
+        assert not shareable_file_name(bad), bad
+
+
+def test_list_project_files_lists_real_markdown_files_only(projects):
+    root, _share = projects
+    os.symlink(os.path.join(root, "AGENTS.md"), os.path.join(root, "CLAUDE.md"))
+    for name in ("README.MD", ".secret.md"):
+        with open(os.path.join(root, name), "w") as handle:
+            handle.write("x")
+    os.mkdir(os.path.join(root, "folder.md"))
+    # notes.txt is not Markdown, .secret.md is hidden, CLAUDE.md is a link,
+    # folder.md is a folder.
+    assert list_project_files(root) == ["AGENTS.md", "README.MD"]
+    assert list_project_files(root + "/missing") == []
+
+
+F = SHARE + "/AGENTS.md"
+FS = STAGE + "/AGENTS.md"
+FSRC = ROOT + "/AGENTS.md"
+
+
+def classify_file_with(entries, is_same_dir=same):
+    return classify_file("AGENTS.md", ROOT, SHARE, entries, is_same_dir=is_same_dir)
+
+
+def test_classify_file():
+    assert classify_file_with([]) == FileState("AGENTS.md", HIDDEN)
+    assert classify_file_with([entry(F, ro=True)]) == FileState("AGENTS.md", READ)
+    stale = classify_file_with([entry(F, ro=True)], is_same_dir=differ)
+    assert stale.mode == READ and not stale.current
+    assert classify_file_with([entry(F)]).mode == CONFLICT  # read-write
+    assert classify_file_with([entry(F, ro=True), entry(F, ro=True)]).mode == CONFLICT
+    assert classify_file_with([entry(SHARE + "/AGENTS.mdx", ro=True)]).mode == HIDDEN
+
+
+def test_needs_file_change():
+    assert not needs_file_change(FileState("a.md", HIDDEN), HIDDEN)
+    assert not needs_file_change(FileState("a.md", READ), READ)
+    assert needs_file_change(FileState("a.md", READ, current=False), READ)
+    assert not needs_file_change(FileState("a.md", HIDDEN, current=False), HIDDEN)
+    assert needs_file_change(FileState("a.md", HIDDEN), READ)
+    assert needs_file_change(FileState("a.md", READ), HIDDEN)
+    assert needs_file_change(FileState("a.md", CONFLICT), READ)
+
+
+def file_plan(mode, entries):
+    return plan_file(Change("AGENTS.md", mode, FILE), ROOT, SHARE, entries, stage=STAGE).steps
+
+
+def test_a_file_is_built_read_only_then_moved_in():
+    assert file_plan(READ, []) == [
+        Step(BIND_FILE, FS, FSRC),
+        Step(PRIVATE, FS),
+        Step(READONLY, FS),
+        Step(MKFILE, F),
+        Step(MOVE, F, FS),
+    ]
+    assert file_plan(READ, [entry(F, ro=True)])[0] == Step(UMOUNT, F)  # a fresh re-share
+
+
+def test_hiding_a_file_unmounts_it_and_removes_the_mount_point():
+    assert file_plan(HIDDEN, [entry(F, ro=True)]) == [Step(UMOUNT, F), Step(UNLINK, F)]
+
+
+def test_plan_changes_plans_files_and_folders_alike():
+    plans = plan_changes(
+        [Change("ABC", READ), Change("AGENTS.md", READ, FILE)], ROOT, SHARE, GIT, [],
+        stage=STAGE, is_same_dir=same, targets=targets(),
+    )
+    assert plans[0].steps[0] == Step(BIND, S, SRC)
+    assert plans[1].steps[0] == Step(BIND_FILE, FS, FSRC)
+    assert all(plan.uses_stage for plan in plans)
+
+
+def test_render_file_steps():
+    assert render_step(Step(BIND_FILE, FS, FSRC)) == f"mount --bind {FSRC} {FS}"
+    assert render_step(Step(MKFILE, "/s/My Notes.md")) == "touch '/s/My Notes.md'"
+    assert render_step(Step(UNLINK, F)) == f"rm {F}"

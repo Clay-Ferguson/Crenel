@@ -14,13 +14,15 @@ def test_build_and_encode(projects):
     root, share = projects
     protected = (".git", "# off for now", ".envrc")
     settings = Settings(projects_root=root, share_dir=share, protected=protected)
-    request = build_request(settings, [Change("ABC", "read"), Change("\udcff", "write")], True)
+    changes = [Change("ABC", "read"), Change("\udcff", "write"), Change("A.md", "read", "file")]
+    request = build_request(settings, changes, True)
     assert request["root"] == root and request["share"] == share
     assert request["force"] is True and request["protected"] == [".git", ".envrc"]
     assert request["protocol"] == helper.PROTOCOL
     data = encode_request(request)
     assert data.isascii()
     assert json.loads(data)["changes"][1]["name"] == "\udcff"
+    assert [c["kind"] for c in request["changes"]] == ["folder", "folder", "file"]
 
 
 def test_results():

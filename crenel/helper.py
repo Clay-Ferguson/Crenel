@@ -4,11 +4,12 @@ The window never runs as root. When you press Apply it starts this module
 through `pkexec`, which asks for your password. It sends one JSON request on
 stdin and reads one JSON reply from stdout:
 
-    request  {"protocol": 2, "root": "/home/me/projects", "share": "/home/me/vm-share",
+    request  {"protocol": 3, "root": "/home/me/projects", "share": "/home/me/vm-share",
               "protected": [".git"], "force": false,
-              "changes": [{"name": "ABC", "mode": "write"}, ...]}
-    reply    {"results": [{"name": "ABC", "mode": "write", "ok": true, "busy": false,
-                           "error": "", "warning": ""}, ...]}
+              "changes": [{"name": "ABC", "mode": "write", "kind": "folder"},
+                          {"name": "AGENTS.md", "mode": "read", "kind": "file"}, ...]}
+    reply    {"results": [{"name": "ABC", "mode": "write", "kind": "folder", "ok": true,
+                           "busy": false, "error": "", "warning": ""}, ...]}
          or  {"error": "why the request was refused"}
 
 This is Crenel's security boundary, so it trusts nothing it is sent:
@@ -16,6 +17,10 @@ This is Crenel's security boundary, so it trusts nothing it is sent:
 - **Paths.** The root and share folders must be absolute, normalized, owned by
   the caller (`PKEXEC_UID`), contain no symlinks anywhere, and not overlap.
   Folder names, and the protected names, must be single path components.
+- **Files are read-only Markdown.** A file change (a file directly inside the
+  projects folder, see `shares.py`) must name a non-hidden `*.md` file and
+  can only be hidden or read. Its source must be a regular file owned by
+  the caller, opened without following links like everything else.
 - **No symlink races.** Every path is opened one component at a time with
   O_NOFOLLOW, and the mount system calls are given `/proc/self/fd/N`. A link
   swapped in after the checks therefore makes the step fail instead of
@@ -52,9 +57,15 @@ from dataclasses import dataclass
 
 from .shares import (
     BIND,
+    BIND_FILE,
     CONFLICT,
+    FILE,
+    FILE_MODES,
+    FOLDER,
     HIDDEN,
+    KINDS,
     MKDIR,
+    MKFILE,
     MODES,
     MOVE,
     PRIVATE,
@@ -63,21 +74,25 @@ from .shares import (
     RMDIR,
     STAGE_DIR,
     UMOUNT,
+    UNLINK,
     WRITE,
     Change,
+    FileState,
     FolderPlan,
     FolderState,
     MountEntry,
     classify,
+    classify_file,
     expected_protections,
     mounts_under,
     plan_changes,
     read_mountinfo,
     render_step,
+    shareable_file_name,
     valid_name,
 )
 
-PROTOCOL = 2
+PROTOCOL = 3
 
 # More than any real request (a few hundred folders' names), and a bound on
 # what a stray writer to our stdin can make us parse as root.
@@ -86,6 +101,10 @@ MAX_REQUEST_BYTES = 1 << 20
 # More protected names than anyone needs, and a bound on the mounts one
 # folder can be asked for.
 MAX_PROTECTED = 64
+
+# More Markdown files than a projects folder will hold, and a bound on the
+# file mounts one request can make.
+MAX_FILES = 256
 
 # <sys/mount.h>
 MS_RDONLY = 0x1
@@ -199,19 +218,30 @@ def validate_request(data: object, uid: int) -> Request:
         raise RequestError("changes must be a list.")
     changes: list[Change] = []
     seen: set[str] = set()
+    files = 0
     for item in raw:
         if not isinstance(item, dict):
             raise RequestError("Each change must be an object.")
-        name, mode = item.get("name"), item.get("mode")
+        name, mode, kind = item.get("name"), item.get("mode"), item.get("kind")
+        if kind not in KINDS:
+            raise RequestError(f"{kind!r} is not one of {', '.join(KINDS)}.")
         if not valid_name(name):
-            raise RequestError(f"{name!r} is not a folder name.")
+            raise RequestError(f"{name!r} is not a {kind} name.")
         assert isinstance(name, str)
-        if mode not in MODES:
+        if kind == FILE:
+            if not shareable_file_name(name):
+                raise RequestError(f"{name} is not a Markdown file that can be shared.")
+            if mode not in FILE_MODES:
+                raise RequestError(f"A file can only be {' or '.join(FILE_MODES)}, not {mode!r}.")
+            files += 1
+            if files > MAX_FILES:
+                raise RequestError(f"At most {MAX_FILES} files can be shared.")
+        elif mode not in MODES:
             raise RequestError(f"{mode!r} is not one of {', '.join(MODES)}.")
         if name in seen:
             raise RequestError(f"{name} appears twice.")
         seen.add(name)
-        changes.append(Change(name, str(mode)))
+        changes.append(Change(name, str(mode), str(kind)))
     return Request(root, share, tuple(protected), force, tuple(changes))
 
 
@@ -322,6 +352,72 @@ def do_bind(source: str, target: str, uid: int) -> None:
             os.close(target_fd)
 
 
+def do_bind_file(source: str, staged: str, stage: str, uid: int) -> None:
+    """Bind the file `source` onto a new empty file `staged` in the scratch spot.
+
+    The source must be a regular file owned by the caller, checked on the
+    descriptor that is then bound, so a link or someone else's file swapped
+    in after the request was planned is never what gets shared.
+    """
+    if os.path.dirname(staged) != stage:
+        raise OSError(errno.EINVAL, "is not directly inside the scratch spot", staged)
+    source_fd = open_nofollow(source)
+    try:
+        info = os.fstat(source_fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise OSError(errno.EINVAL, "is not a regular file", source)
+        if info.st_uid != uid:
+            raise OSError(errno.EPERM, "is not owned by you", source)
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
+        os.close(os.open(staged, flags, 0o600))
+        target_fd = open_nofollow(staged)
+        try:
+            if _c().mount(_fd_path(source_fd), _fd_path(target_fd), None, MS_BIND, None) != 0:
+                _raise_errno(staged)
+        finally:
+            os.close(target_fd)
+    finally:
+        os.close(source_fd)
+
+
+def do_mkfile(path: str, uid: int, gid: int) -> None:
+    """Create the empty file mount point `path`, owned by the user; an existing file is fine."""
+    parent = open_nofollow(os.path.dirname(path))
+    base = os.path.basename(path)
+    try:
+        try:
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
+            os.close(os.open(base, flags, 0o644, dir_fd=parent))
+        except FileExistsError:
+            info = os.stat(base, dir_fd=parent, follow_symlinks=False)
+            if not stat.S_ISREG(info.st_mode):
+                raise OSError(errno.EEXIST, "exists and is not a file", path) from None
+            return
+        os.chown(base, uid, gid, dir_fd=parent, follow_symlinks=False)
+    finally:
+        os.close(parent)
+
+
+def do_unlink(path: str) -> str:
+    """Remove the empty file mount point `path`. Returns a warning, or ""."""
+    parent = open_nofollow(os.path.dirname(path))
+    base = os.path.basename(path)
+    try:
+        try:
+            info = os.stat(base, dir_fd=parent, follow_symlinks=False)
+        except FileNotFoundError:
+            return ""
+        if not stat.S_ISREG(info.st_mode) or info.st_size:
+            return f"{path} was left in place because it is not an empty file."
+        try:
+            os.unlink(base, dir_fd=parent)
+        except FileNotFoundError:
+            pass
+    finally:
+        os.close(parent)
+    return ""
+
+
 def remount_flags(entry: MountEntry | None, read_only: bool) -> int:
     """The flags for a bind remount of `entry` that changes only ro/rw."""
     flags = MS_REMOUNT | MS_BIND | (MS_RDONLY if read_only else 0)
@@ -364,14 +460,19 @@ def do_move(source: str, target: str) -> None:
     """Move the finished share at `source` (in the scratch spot) onto `target`.
 
     The VM's copy is made at this moment, from the mount as it now is:
-    read-only if it is read-only, with its protections inside it.
+    read-only if it is read-only, with its protections inside it. A folder
+    goes onto a folder and a file onto a file.
     """
     source_fd = open_nofollow(source)
     try:
         target_fd = open_nofollow(target)
         try:
-            if not stat.S_ISDIR(os.fstat(target_fd).st_mode):
+            source_dir = stat.S_ISDIR(os.fstat(source_fd).st_mode)
+            target_mode = os.fstat(target_fd).st_mode
+            if source_dir and not stat.S_ISDIR(target_mode):
                 raise OSError(errno.ENOTDIR, "is not a folder", target)
+            if not source_dir and not stat.S_ISREG(target_mode):
+                raise OSError(errno.EINVAL, "is not a file", target)
             if _c().mount(_fd_path(source_fd), _fd_path(target_fd), None, MS_MOVE, None) != 0:
                 _raise_errno(target)
         finally:
@@ -473,13 +574,17 @@ def do_rmdir(path: str) -> str:
 # -- applying a request ------------------------------------------------------------------
 
 
-def exposure(state: FolderState) -> int:
-    """How much the VM can do to a folder in `state`, as a rank.
+def exposure(state: FolderState | FileState) -> int:
+    """How much the VM can do to a folder (or file) in `state`, as a rank.
 
     0 hidden, 1 read, 2 write with every protection asked for in place,
     3 write without them, 4 something unrecognized. What was asked for is
-    in `state.targets`, worked out from the request's protected names.
+    in `state.targets`, worked out from the request's protected names. A
+    file is only ever hidden, read (even an out-of-date one: it is still
+    read-only and was the user's) or unrecognized.
     """
+    if isinstance(state, FileState):
+        return {HIDDEN: 0, READ: 1}.get(state.mode, 4)
     if state.mode == HIDDEN:
         return 0
     if state.mode == READ:
@@ -490,7 +595,9 @@ def exposure(state: FolderState) -> int:
     return 4
 
 
-def _desired_exposure(mode: str, protected: tuple[str, ...]) -> int:
+def _desired_exposure(mode: str, protected: tuple[str, ...], kind: str = FOLDER) -> int:
+    if kind == FILE:
+        return {HIDDEN: 0, READ: 1}[mode]
     return {HIDDEN: 0, READ: 1, WRITE: 2 if protected else 3}[mode]
 
 
@@ -506,6 +613,12 @@ def _run_step(step, request: Request, uid: int, gid: int, stage: str) -> str:
         if step.source != step.path:
             _make_stage_dir(step.path, stage)
         do_bind(step.source, step.path, uid)
+    elif step.kind == BIND_FILE:
+        do_bind_file(step.source, step.path, stage, uid)
+    elif step.kind == MKFILE:
+        do_mkfile(step.path, uid, gid)
+    elif step.kind == UNLINK:
+        return do_unlink(step.path)
     elif step.kind == PRIVATE:
         do_private(step.path)
     elif step.kind == READONLY:
@@ -517,8 +630,40 @@ def _run_step(step, request: Request, uid: int, gid: int, stage: str) -> str:
     return ""
 
 
-def _state(request: Request, name: str) -> FolderState:
-    return classify(name, request.root, request.share, read_mountinfo(), request.protected)
+def _state(request: Request, change: Change) -> FolderState | FileState:
+    if change.kind == FILE:
+        return classify_file(change.name, request.root, request.share, read_mountinfo())
+    return classify(change.name, request.root, request.share, read_mountinfo(), request.protected)
+
+
+def _matches(state: FolderState | FileState, mode: str) -> bool:
+    """Whether `state` is exactly what asking for `mode` should have made."""
+    if state.mode != mode:
+        return False
+    if isinstance(state, FileState):
+        return mode != READ or state.current
+    return state.protections == expected_protections(mode, state.targets)
+
+
+def _remove_mount_point(path: str) -> None:
+    """Remove `path` if it is an empty folder or an empty file, ignoring failures."""
+    try:
+        parent = open_nofollow(os.path.dirname(path))
+    except OSError:
+        return
+    try:
+        info = os.stat(os.path.basename(path), dir_fd=parent, follow_symlinks=False)
+    except OSError:
+        return
+    finally:
+        os.close(parent)
+    try:
+        if stat.S_ISDIR(info.st_mode):
+            do_rmdir(path)
+        else:
+            do_unlink(path)
+    except OSError:
+        pass
 
 
 def _hide_everything(request: Request, name: str) -> None:
@@ -538,10 +683,7 @@ def _hide_everything(request: Request, name: str) -> None:
                 _c().umount2(target, UMOUNT_NOFOLLOW | MNT_DETACH)
             finally:
                 os.close(parent)
-    try:
-        do_rmdir(destination)
-    except OSError:
-        pass
+    _remove_mount_point(destination)
 
 
 def apply_folder(
@@ -552,12 +694,13 @@ def apply_folder(
     result = {
         "name": change.name,
         "mode": change.mode,
+        "kind": change.kind,
         "ok": True,
         "busy": False,
         "error": "",
         "warning": "",
     }
-    before = _state(request, change.name)
+    before = _state(request, change)
     for step in plan.steps:
         try:
             warning = _run_step(step, request, uid, gid, stage)
@@ -571,24 +714,21 @@ def apply_folder(
         if warning:
             result["warning"] = warning
 
-    after = _state(request, change.name)
-    if result["ok"] and (
-        after.mode != change.mode
-        or after.protections != expected_protections(change.mode, after.targets)
-    ):
+    after = _state(request, change)
+    if result["ok"] and not _matches(after, change.mode):
         detail = f" ({after.detail})" if after.mode == CONFLICT else ""
-        result.update(ok=False, error=f"Afterwards the folder is {after.mode}{detail}.")
+        stale = " (and not the current file)" if after.mode == READ and change.kind == FILE else ""
+        result.update(
+            ok=False, error=f"Afterwards the {change.kind} is {after.mode}{stale}{detail}."
+        )
 
     if not result["ok"] and after.mode == HIDDEN:
         # A failed share leaves no empty mount point behind for the VM to see.
-        try:
-            do_rmdir(os.path.join(request.share, change.name))
-        except OSError:
-            pass
+        _remove_mount_point(os.path.join(request.share, change.name))
 
     allowed = max(
         exposure(before),
-        _desired_exposure(change.mode, request.protected),
+        _desired_exposure(change.mode, request.protected, change.kind),
     )
     if exposure(after) > allowed:
         _hide_everything(request, change.name)
@@ -622,8 +762,8 @@ def apply_request(request: Request, uid: int, gid: int) -> list[dict]:
         except OSError as exc:
             reason = f"Could not create the scratch spot {stage}: {exc.strerror or exc}"
             return [
-                {"name": p.change.name, "mode": p.change.mode, "ok": False, "busy": False,
-                 "error": reason, "warning": ""}
+                {"name": p.change.name, "mode": p.change.mode, "kind": p.change.kind,
+                 "ok": False, "busy": False, "error": reason, "warning": ""}
                 for p in plans
             ]
     try:

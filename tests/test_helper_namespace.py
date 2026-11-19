@@ -32,8 +32,9 @@ import pytest
 
 REPO = Path(__file__).resolve().parent.parent
 
-# The VM's side: answers "w <path>" with whether it can write there, and
-# "r <path>" with whether it can rename it (to <path>-old).
+# The VM's side: answers "w <path>" with whether it can write there,
+# "r <path>" with whether it can rename it (to <path>-old), "l <path>" with
+# what is in it, and "c <path>" with the file's text (JSON, null if unreadable).
 VM_VIEW = r"""
 import sys
 for line in sys.stdin:
@@ -46,9 +47,13 @@ for line in sys.stdin:
         elif kind == "l":
             print(" ".join(sorted(__import__("os").listdir(path))), flush=True)
             continue
+        elif kind == "c":
+            with open(path) as handle:
+                print(__import__("json").dumps(handle.read()), flush=True)
+            continue
         print("yes", flush=True)
     except OSError:
-        print("no", flush=True)
+        print("null" if kind == "c" else "no", flush=True)
 """
 
 DRIVER = r"""
@@ -73,8 +78,10 @@ def ask_vm(kind, path):
     return vm.stdout.readline().strip()
 
 def run(changes, force=False, protected=(".git",)):
-    request = {"protocol": 2, "root": root, "share": share, "protected": list(protected),
-               "force": force, "changes": [{"name": n, "mode": m} for n, m in changes]}
+    request = {"protocol": 3, "root": root, "share": share, "protected": list(protected),
+               "force": force,
+               "changes": [{"name": c[0], "mode": c[1], "kind": c[2] if len(c) > 2 else "folder"}
+                           for c in changes]}
     sys.stdin = io.TextIOWrapper(io.BytesIO(json.dumps(request).encode()))
     buffer = io.StringIO()
     real, sys.stdout = sys.stdout, buffer
@@ -87,7 +94,10 @@ def run(changes, force=False, protected=(".git",)):
         n: [s.mode, list(s.protections)]
         for n, s in shares.read_states(root, share, list(protected)).items()
     }
-    return {"code": code, "reply": reply, "states": states}
+    files = {
+        n: [s.mode, s.current] for n, s in shares.read_file_states(root, share).items()
+    }
+    return {"code": code, "reply": reply, "states": states, "files": files}
 
 def can_write(path):
     try:
@@ -115,6 +125,18 @@ for op in script:
         out.append(ask_vm("r", os.path.join(share, op[1])) == "yes")
     elif kind == "vm_list":
         out.append(ask_vm("l", share).split())
+    elif kind == "vm_cat":
+        out.append(json.loads(ask_vm("c", os.path.join(share, op[1]))))
+    elif kind == "edit":              # rewrite a file in the projects folder in place
+        with open(os.path.join(root, op[1]), "w") as handle:
+            handle.write(op[2])
+        out.append(True)
+    elif kind == "replace":           # save it the way many editors do: new file, rename
+        temporary = os.path.join(root, ".tmp-" + op[1])
+        with open(temporary, "w") as handle:
+            handle.write(op[2])
+        os.replace(temporary, os.path.join(root, op[1]))
+        out.append(True)
     elif kind == "host_mounts":
         out.append(mounts_on_projects())
     elif kind == "hold":
@@ -315,3 +337,77 @@ def test_a_git_file_is_protected_too(projects):
     ])
     assert out[0]["states"]["ghi"] == ["write", [".git"]]
     assert out[1:] == [False, False, True]
+
+
+# -- the projects folder's Markdown files ---------------------------------------------
+
+AGENTS = "# Notes to agents\n"  # what conftest's projects folder holds
+
+
+def test_a_file_is_read_only_in_the_vm(projects):
+    root, share = projects
+    out = drive(root, share, [
+        ["apply", [["AGENTS.md", "read", "file"]], {}],
+        ["vm_cat", "AGENTS.md"],
+        ["vm", "AGENTS.md"],
+        ["vm_rename", "AGENTS.md"],
+        ["writable", "AGENTS.md"],
+        ["host", "AGENTS.md"],
+        ["vm_list"],
+        ["host_mounts"],
+        ["edit", "AGENTS.md", "edited in place\n"],
+        ["vm_cat", "AGENTS.md"],
+    ])
+    assert out[0]["reply"]["results"][0]["ok"]
+    assert out[0]["files"]["AGENTS.md"] == ["read", True]
+    assert "AGENTS.md" not in out[0]["states"]  # a file is never a project row
+    assert out[1] == AGENTS
+    assert out[2:6] == [False, False, False, True]  # VM, share: no; your own file: yes
+    assert out[6] == ["AGENTS.md"]
+    assert out[7] == []  # nothing mounted on the projects folder itself
+    assert out[9] == "edited in place\n"  # an edit in place reaches the VM at once
+
+
+def test_a_replaced_file_is_out_of_date_until_shared_again(projects):
+    root, share = projects
+    out = drive(root, share, [
+        ["apply", [["AGENTS.md", "read", "file"]], {}],
+        ["replace", "AGENTS.md", "saved anew\n"],
+        ["apply", [], {}],
+        ["vm_cat", "AGENTS.md"],
+        ["apply", [["AGENTS.md", "read", "file"]], {}],
+        ["vm_cat", "AGENTS.md"],
+    ])
+    assert out[2]["files"]["AGENTS.md"] == ["read", False]
+    assert out[3] == AGENTS  # the VM still has the old file
+    assert out[4]["reply"]["results"][0]["ok"]
+    assert out[4]["files"]["AGENTS.md"] == ["read", True]
+    assert out[5] == "saved anew\n"
+
+
+def test_hiding_a_file_leaves_nothing_behind(projects):
+    root, share = projects
+    out = drive(root, share, [
+        ["apply", [["AGENTS.md", "read", "file"], ["DEF", "read"]], {}],
+        ["apply", [["AGENTS.md", "hidden", "file"]], {}],
+        ["vm_list"],
+        ["listdir"],
+    ])
+    assert out[1]["reply"]["results"][0]["ok"]
+    assert out[1]["files"]["AGENTS.md"] == ["hidden", True]
+    assert out[2] == ["DEF"] and out[3] == ["DEF"]
+
+
+def test_only_real_markdown_files_are_shared(projects):
+    root, share = projects
+    os.symlink(os.path.join(root, "AGENTS.md"), os.path.join(root, "LINK.md"))
+    out = drive(root, share, [
+        ["apply", [["notes.txt", "read", "file"]], {}],
+        ["apply", [["AGENTS.md", "write", "file"]], {}],
+        ["apply", [["LINK.md", "read", "file"]], {}],
+        ["listdir"],
+    ])
+    assert out[0]["code"] == 2 and "Markdown" in out[0]["reply"]["error"]
+    assert out[1]["code"] == 2 and "only be hidden or read" in out[1]["reply"]["error"]
+    assert not out[2]["reply"]["results"][0]["ok"]
+    assert out[3] == []

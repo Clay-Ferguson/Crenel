@@ -28,6 +28,17 @@ def test_it_shows_the_file(qtbot, conf, projects):
     assert isinstance(dialog.protected_edit, QPlainTextEdit)
 
 
+def test_the_share_projects_files_box(qtbot, conf):
+    dialog = make(qtbot)
+    assert dialog.files_check.text() == "Share Projects Files"
+    assert not dialog.files_check.isChecked()
+    dialog.files_check.setChecked(True)
+    dialog._save()
+    assert dialog.result() == dialog.DialogCode.Accepted
+    assert load_settings()[0].share_projects_files is True
+    assert make(qtbot).files_check.isChecked()
+
+
 def test_save_writes_and_creates_the_share_folder(qtbot, conf, projects):
     root, share = projects
     assert not os.path.exists(share)

@@ -1,10 +1,10 @@
 """The config file: what it holds, how it is read, and how it is written.
 
-One YAML file at `CONFIG_PATH` holds the three things the settings dialog
-edits: the projects folder whose subfolders the window lists, the share
-folder the VM's virtiofs share points at, and the protected names, the
-folders or files inside each project shared Write that are made read-only
-(`.git` by default).
+One YAML file at `CONFIG_PATH` holds the things the settings dialog edits:
+the projects folder whose subfolders the window lists, whether the Markdown
+files directly inside it are shared too (read-only), the share folder the
+VM's virtiofs share points at, and the protected names, the folders or files
+inside each project shared Write that are made read-only (`.git` by default).
 
 Every key is described once, in `KEYS`, and loading and rendering are driven
 from that table. Adding a setting is a `Settings` field, a `KEYS` row and a
@@ -58,6 +58,9 @@ class Settings:
     # The protected-names lines as written, comments included. See
     # `protected_names` for the ones in use.
     protected: tuple[str, ...] = DEFAULT_PROTECTED
+    # Share the Markdown files directly inside the projects folder (an
+    # AGENTS.md, say), read-only. Never its folders: those are the projects.
+    share_projects_files: bool = False
 
     @property
     def protected_names(self) -> tuple[str, ...]:
@@ -102,6 +105,13 @@ ROOT_COMMENT = """\
   # folders directly inside it are listed, never anything deeper.
 """
 
+FILES_COMMENT = """\
+  # true to also show the VM the Markdown files (*.md) directly inside the
+  # projects folder, read-only, beside the projects in the share folder: an
+  # AGENTS.md that agents look for in a project's parent folder, say. Folders
+  # are never included, and hidden files and symlinks are skipped.
+"""
+
 SHARE_COMMENT = """\
   # The folder the VM's virtiofs share points at. Crenel mounts each project
   # you share into it, so it must be empty apart from what Crenel puts there.
@@ -132,6 +142,7 @@ class Key:
 
 KEYS = (
     Key("projects_root", "folders", "projects_root", STRING, ROOT_COMMENT),
+    Key("share_projects_files", "folders", "share_projects_files", BOOL, FILES_COMMENT),
     Key("share_dir", "folders", "share_dir", STRING, SHARE_COMMENT),
     Key("protected", "protection", "protected", LIST, PROTECTED_COMMENT),
 )

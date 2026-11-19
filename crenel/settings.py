@@ -1,4 +1,4 @@
-"""The settings dialog: the two folders, and the protected names.
+"""The settings dialog: the two folders, Share Projects Files, and the protected names.
 
 DupFinder's dialog layout: a stack of labelled sections in a QVBoxLayout,
 sized to its contents, with Save and Cancel pinned at the bottom. Adding a
@@ -14,6 +14,7 @@ from __future__ import annotations
 from html import escape
 
 from PyQt6.QtWidgets import (
+    QCheckBox,
     QDialog,
     QFileDialog,
     QHBoxLayout,
@@ -23,7 +24,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from windowchrome import apply_frame, apply_scrollbars
+from windowchrome import apply_checkboxes, apply_frame, apply_scrollbars
 
 from . import APP_NAME, messages
 from .config import (
@@ -52,6 +53,14 @@ LABEL_SPACING = 4
 MIN_WIDTH = 640
 
 ROOT_LABEL = "Projects folder (every folder directly inside it is listed):"
+FILES_LABEL = "Share Projects Files"
+FILES_TIP = (
+    "Also show the VM the Markdown files (*.md) directly inside the projects\n"
+    "folder, read-only, beside the projects: an AGENTS.md that coding agents\n"
+    "look for in a project's parent folder, say. Folders are never included\n"
+    "(each project is still shared on its own), and hidden files and symlinks\n"
+    "are skipped. Press Apply in the main window to carry it out."
+)
 SHARE_LABEL = "VM share folder (point the VM's virtiofs share here):"
 PROTECTED_LABEL = (
     "Read-only in projects shared Write (one name per line, e.g. .git; "
@@ -116,6 +125,12 @@ class SettingsDialog(QDialog):
             "Choose the projects folder",
             tooltip="Crenel lists the folders directly inside this one, never deeper.",
         )
+        self.files_check = QCheckBox(FILES_LABEL)
+        self.files_check.setChecked(settings.share_projects_files)
+        self.files_check.setToolTip(FILES_TIP)
+        apply_checkboxes(self.files_check)
+        self._layout.addSpacing(LABEL_SPACING)
+        self._layout.addWidget(self.files_check)
         self.share_edit = self._add_folder(
             SHARE_LABEL,
             settings.share_dir,
@@ -211,6 +226,7 @@ class SettingsDialog(QDialog):
         lines = (line if is_comment(line) else line.rstrip("/") for line in lines)
         return Settings(
             projects_root=self.root_edit.text().strip(),
+            share_projects_files=self.files_check.isChecked(),
             share_dir=self.share_edit.text().strip(),
             protected=tuple(dict.fromkeys(line for line in lines if line)),
         )
